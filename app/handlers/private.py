@@ -11,18 +11,19 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 from app.context import AppContext
-from app.handlers.admin import update_admin_panel
+from app.handlers.admin import update_admin_panel, update_report_panel
 from app.keyboards import (
     admin_article_keyboard,
     admin_back_keyboard,
     admin_keyboard,
     admin_speech_keyboard,
+    admin_report_reply_keyboard,
     delete_keyboard,
     home_keyboard,
     submission_keyboard,
 )
 from app.messages import WELCOME_TEXT
-from app.services.admin import format_article
+from app.services.admin import format_article, format_report_reply
 from app.services.deletion import delete_article_messages
 from app.services.publishing import publish_pending
 from app.telegram_utils import delete_private_messages, try_delete_message
@@ -124,7 +125,7 @@ async def private_text(message: Message, bot: Bot, ctx: AppContext) -> None:
         return
 
     state = await ctx.db.get_state(user_id)
-    if state and state["state"] == "admin_wait_speech" and user_id in ctx.settings.admin_user_ids:
+    if state and state["state"] in {"admin_wait_speech", "admin_wait_report_reply"} and user_id in ctx.settings.admin_user_ids:
         await _handle_admin_text(message, bot, ctx, state)
         return
 
@@ -338,6 +339,27 @@ async def _handle_admin_text(
             )
         except (TypeError, ValueError):
             current_panel_id = panel_id
+
+        if state["state"] == "admin_wait_report_reply":
+            report_id = current_state["payload"]["report_id"]
+            report = await ctx.db.get_report(report_id)
+            if not report or report["status"] != "open" or report["reply_status"] not in {"none", "failed"}:
+                await update_report_panel(bot, ctx, user_id, message.chat.id, current_panel_id, report_id,
+                                          "檢舉已處理或回覆結果待確認，未送出回覆。")
+                return
+            text = (message.text or "").strip()
+            if not text or len(format_report_reply(report, text).encode("utf-16-le")) // 2 > 4096:
+                await message.answer("回覆不能空白，連同文章編號說明需在 4096 字元內，部分表情符號占兩個字元。請縮短後重試，或用 /cancel 取消。")
+                return
+            nonce = secrets.token_urlsafe(12)
+            preview = text[:1500] + ("\n…（完整回覆以你傳送的原文為準）" if len(text) > 1500 else "")
+            await update_admin_panel(
+                bot, ctx, user_id=user_id, chat_id=message.chat.id, current_panel_id=current_panel_id,
+                text=f"回覆檢舉 #{report_id} 的檢舉人\n文章：#{report['article_id']}\n\n{preview}\n\n送出後不會自動結案，請確認後另按「結案」。",
+                reply_markup=admin_report_reply_keyboard(report_id, nonce), state_name="admin_report_reply_confirm",
+                state_payload={"report_id": report_id, "text": text, "nonce": nonce},
+            )
+            return
 
         if state["state"] == "admin_wait_speech":
             text = (message.text or "").strip()

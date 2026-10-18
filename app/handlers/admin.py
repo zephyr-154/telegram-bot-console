@@ -11,8 +11,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.backup import backup_database
 from app.context import AppContext
-from app.keyboards import admin_article_keyboard, admin_back_keyboard, admin_force_keyboard, admin_keyboard, admin_resolution_keyboard, page_buttons
-from app.services.admin import admin_stats, format_article
+from app.keyboards import admin_article_keyboard, admin_back_keyboard, admin_force_keyboard, admin_keyboard, admin_report_keyboard, admin_resolution_keyboard, page_buttons
+from app.services.admin import admin_stats, format_article, format_report, format_report_reply
 from app.services.deletion import delete_article_messages
 from app.services.publishing import _wait_for_send_slot
 from app.telegram_utils import try_delete_message
@@ -163,6 +163,40 @@ async def _send_speech(bot: Bot, ctx: AppContext, targets: list[int], text: str,
             ctx.publish_tasks.discard(task)
 
 
+async def update_report_panel(bot: Bot, ctx: AppContext, user_id: int, chat_id: int, panel_id: int | None,
+                              report_id: int, notice: str = "") -> None:
+    report = await ctx.db.get_report(report_id)
+    await update_admin_panel(
+        bot, ctx, user_id=user_id, chat_id=chat_id, current_panel_id=panel_id,
+        text=(notice + "\n\n" if notice else "") + (format_report(report) if report else "找不到這筆檢舉。"),
+        reply_markup=admin_report_keyboard(report) if report else admin_back_keyboard(),
+        state_name="admin_report_detail", state_payload={"report_id": report_id},
+    )
+
+
+async def _send_report_reply(bot: Bot, ctx: AppContext, report: dict, text: str) -> str:
+    task = asyncio.current_task()
+    if task:
+        ctx.publish_tasks.add(task)
+    status, message_id = "uncertain", None
+    try:
+        try:
+            message = await bot.send_message(chat_id=report["reporter_user_id"], text=format_report_reply(report, text), parse_mode=None)
+            status, message_id = "sent", message.message_id
+        except (TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter) as exc:
+            status = "failed"
+            logger.warning("report reply rejected report=%s error=%s", report["report_id"], type(exc).__name__)
+        except (TelegramAPIError, TimeoutError, OSError) as exc:
+            logger.warning("report reply uncertain report=%s error=%s", report["report_id"], type(exc).__name__)
+        return status
+    finally:
+        try:
+            await ctx.db.finish_report_reply(report["report_id"], status, message_id)
+        finally:
+            if task:
+                ctx.publish_tasks.discard(task)
+
+
 @router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data.startswith("admin:"))
 async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> None:
     if not _is_admin(callback, ctx):
@@ -188,6 +222,70 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
         # Telegram request. Re-read state after acquiring the lock.
         state = await _get_current_admin_state(callback, ctx)
         if state is None:
+            return
+
+        if action in {"report", "report_reply", "report_close", "reply_edit", "reply_send", "report_close_yes"}:
+            expected_length = 4 if action in {"reply_edit", "reply_send", "report_close_yes"} else 3
+            if len(parts) != expected_length or not parts[2].isdigit() or len(parts[2]) > 18 or int(parts[2]) <= 0:
+                return
+            report_id = int(parts[2])
+            report = await ctx.db.get_report(report_id)
+            if not report:
+                await update_report_panel(bot, ctx, user_id, chat_id, panel_id, report_id)
+                return
+            if action == "report":
+                await update_report_panel(bot, ctx, user_id, chat_id, panel_id, report_id)
+                return
+            payload = state["payload"]
+            if expected_length == 4:
+                expected_state = "admin_report_close_confirm" if action == "report_close_yes" else "admin_report_reply_confirm"
+                if state["state"] != expected_state or payload.get("report_id") != report_id or payload.get("nonce") != parts[3]:
+                    return
+            if report["status"] != "open":
+                await update_report_panel(bot, ctx, user_id, chat_id, panel_id, report_id, "這筆檢舉已結案，未送出任何新回覆。")
+                return
+            if action == "report_close":
+                nonce = secrets.token_urlsafe(12)
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="確認結案（不另發送通知）", callback_data=f"admin:report_close_yes:{report_id}:{nonce}")],
+                    [InlineKeyboardButton(text="返回檢舉／先回覆", callback_data=f"admin:report:{report_id}")],
+                ])
+                await update_admin_panel(
+                    bot, ctx, user_id=user_id, chat_id=chat_id, current_panel_id=panel_id,
+                    text=format_report(report) + "\n\n確定結案這筆檢舉嗎？只結束這一筆紀錄，不刪除貼文，也不另外通知檢舉人。",
+                    reply_markup=keyboard, state_name="admin_report_close_confirm", state_payload={"report_id": report_id, "nonce": nonce},
+                )
+                return
+            if action == "report_close_yes":
+                async with ctx.article_locks[report["article_id"]]:
+                    closed = await ctx.db.close_report(report_id)
+                await update_report_panel(bot, ctx, user_id, chat_id, panel_id, report_id,
+                                          "已結案，未另外發送通知。" if closed else "這筆檢舉已結案或正在傳送回覆，請稍後確認。")
+                return
+            if report["reply_status"] not in {"none", "failed"}:
+                await update_report_panel(bot, ctx, user_id, chat_id, panel_id, report_id, "這筆檢舉已回覆或回覆結果待確認，不會重複傳送。")
+                return
+            if action in {"report_reply", "reply_edit"}:
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="取消回覆／返回檢舉", callback_data=f"admin:report:{report_id}")],
+                ])
+                await update_admin_panel(
+                    bot, ctx, user_id=user_id, chat_id=chat_id, current_panel_id=panel_id,
+                    text=f"回覆檢舉 #{report_id} 的檢舉人（文章 #{report['article_id']}）。\n請輸入純文字回覆；送出後仍須另按結案。\n輸入 /cancel 可取消。",
+                    reply_markup=keyboard, state_name="admin_wait_report_reply", state_payload={"report_id": report_id},
+                )
+                return
+            async with ctx.article_locks[report["article_id"]]:
+                # Claim the report in SQLite before the RPC so another administrator or a restart cannot resend it.
+                await ctx.db.set_state(user_id, "admin_report_reply_sending", {"panel_message_id": panel_id, "report_id": report_id}, iso_utc())
+                if await ctx.db.claim_report_reply(report_id):
+                    result = await _send_report_reply(bot, ctx, report, payload["text"])
+                    notice = {"sent": "已回覆檢舉人。檢舉尚未結案，請確認後按「結案」。",
+                              "failed": "回覆未送出，對方可能已封鎖機器人或暫時無法收訊息；可重新回覆，或選擇不回覆結案。",
+                              "uncertain": "回覆結果不明，不會自動重送；檢舉尚未結案，可確認處理結果後再結案。"}[result]
+                else:
+                    notice = "這筆檢舉已由其他管理員處理或回覆，不會重複傳送。"
+            await update_report_panel(bot, ctx, user_id, chat_id, panel_id, report_id, notice)
             return
 
         if action == "speak" and len(parts) == 2:
@@ -380,15 +478,17 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
                 text="待處理事項：請選擇分類。", reply_markup=keyboard,
             )
             return
-        if action in {"issues", "reports"} and len(parts) == 3:
-            if not parts[2].isdigit() or len(parts[2]) > 6:
+        if (action in {"issues", "reports"} and len(parts) == 3) or (action == "article_reports" and len(parts) == 4):
+            page_part = parts[3] if action == "article_reports" else parts[2]
+            article_filter = normalize_article_id(parts[2]) if action == "article_reports" else None
+            if (action == "article_reports" and not article_filter) or not page_part.isdigit() or len(page_part) > 6:
                 return
-            page = int(parts[2])
+            page = int(page_part)
             size = 10 if action == "issues" else 3
             if action == "issues":
                 rows = await ctx.db.list_attention_articles(size + 1, page * size)
             else:
-                rows = await ctx.db.list_open_reports(size + 1, page * size)
+                rows = await ctx.db.list_open_reports(size + 1, page * size, article_filter)
             lines = [f"{'發布／刪文' if action == 'issues' else '檢舉'}待處理（第 {page + 1} 頁）"]
             buttons = []
             for row in rows[:size]:
@@ -398,10 +498,12 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
                 else:
                     detail = f"檢舉 #{row['report_id']}：{row['reason']}"
                 lines.append(f"\n#{article_id}\n{detail}")
-                buttons.append([InlineKeyboardButton(text=f"處理 #{article_id}", callback_data=f"admin:review:{article_id}")])
+                buttons.append([InlineKeyboardButton(text=f"處理 #{article_id}" if action == "issues" else f"處理檢舉 #{row['report_id']}",
+                                                     callback_data=f"admin:review:{article_id}" if action == "issues" else f"admin:report:{row['report_id']}")])
             if not rows:
                 lines.append("目前沒有待處理紀錄。")
-            navigation = page_buttons(f"admin:{action}", page, len(rows) > size)
+            prefix = f"admin:article_reports:{article_filter}" if action == "article_reports" else f"admin:{action}"
+            navigation = page_buttons(prefix, page, len(rows) > size)
             if navigation:
                 buttons.append(navigation)
             buttons.append([InlineKeyboardButton(text="返回待處理事項", callback_data="admin:pending")])
@@ -410,17 +512,12 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
                 text="\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
             )
             return
-        if action in {"review", "close_reports", "resolve"} and len(parts) == 3:
+        if action in {"review", "resolve"} and len(parts) == 3:
             article_id = normalize_article_id(parts[2])
             article = await ctx.db.get_article(article_id) if article_id else None
             if not article:
                 return
-            if action == "close_reports":
-                await ctx.db.close_reports(article_id)
-                text = f"#{article_id} 的檢舉已結案，紀錄仍保留。"
-                keyboard = admin_back_keyboard()
-                state_name, state_payload = "admin_panel", None
-            elif action == "resolve":
+            if action == "resolve":
                 if not (article.get("publish_error_code") or article.get("delete_error_code")):
                     return
                 nonce = secrets.token_urlsafe(12)
@@ -454,10 +551,9 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
                 if not article or not (article.get("publish_error_code") or article.get("delete_error_code")):
                     return
                 await ctx.db.mark_deleted(article_id, iso_utc())
-                await ctx.db.close_reports(article_id)
             await update_admin_panel(
                 bot, ctx, user_id=user_id, chat_id=chat_id, current_panel_id=panel_id,
-                text=f"#{article_id} 已依管理員人工核對結果結案。", reply_markup=admin_back_keyboard(),
+                text=f"#{article_id} 的發布／刪文異常已依人工核對結果結案。檢舉仍保留待逐筆回覆及結案。", reply_markup=admin_back_keyboard(),
             )
             return
         if action == "force" and len(parts) == 3:
@@ -511,8 +607,7 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
                 return
             result = await delete_article_messages(ctx, bot, article_id)
             if result.success:
-                await ctx.db.close_reports(article_id)
-                text = f"#{article_id} 已刪除。"
+                text = f"#{article_id} 已刪除。檢舉仍保留待逐筆回覆及結案。"
             elif result.error_code == "publication_uncertain":
                 text = "發布結果仍待核對，請先檢查所有目標，手動刪除副本後再人工結案。"
             elif result.error_code == "publication_in_progress":

@@ -81,6 +81,8 @@ CREATE TABLE IF NOT EXISTS reports (
     reason TEXT NOT NULL,
     created_at_utc TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    reply_status TEXT NOT NULL DEFAULT 'none' CHECK (reply_status IN ('none', 'sending', 'sent', 'failed', 'uncertain')),
+    reply_message_id INTEGER,
     UNIQUE(article_id, reporter_user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at_utc);
@@ -111,7 +113,9 @@ class Database:
         self.connection.executescript(SCHEMA)
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(articles)")}
         pending_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(pending_submissions)")}
-        if "send_started_at_utc" not in columns or "target_chat_ids" not in columns or "target_chat_ids" not in pending_columns:
+        report_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(reports)")}
+        if ("send_started_at_utc" not in columns or "target_chat_ids" not in columns
+                or "target_chat_ids" not in pending_columns or not {"reply_status", "reply_message_id"} <= report_columns):
             backup_database(self.path, self.path.parent / "backups")
         self.connection.execute("BEGIN IMMEDIATE")
         try:
@@ -120,6 +124,11 @@ class Database:
                     self.connection.execute(f"ALTER TABLE articles ADD COLUMN {name} TEXT")
             if "target_chat_ids" not in pending_columns:
                 self.connection.execute("ALTER TABLE pending_submissions ADD COLUMN target_chat_ids TEXT")
+            if "reply_status" not in report_columns:
+                self.connection.execute("ALTER TABLE reports ADD COLUMN reply_status TEXT NOT NULL DEFAULT 'none'")
+            if "reply_message_id" not in report_columns:
+                self.connection.execute("ALTER TABLE reports ADD COLUMN reply_message_id INTEGER")
+            self.connection.execute("UPDATE reports SET reply_status = 'uncertain' WHERE reply_status = 'sending'")
             if "send_started_at_utc" not in columns:
                 self.connection.execute(
                     "UPDATE articles SET publish_error_code = 'interrupted_legacy_publish' "
@@ -580,14 +589,38 @@ class Database:
             conn.execute("ROLLBACK")
             raise
 
-    async def list_open_reports(self, limit: int, offset: int) -> list[dict[str, Any]]:
+    async def list_open_reports(self, limit: int, offset: int, article_id: str | None = None) -> list[dict[str, Any]]:
+        condition = " AND article_id = ?" if article_id is not None else ""
+        parameters = (article_id, limit, offset) if article_id is not None else (limit, offset)
         rows = self._conn().execute(
-            "SELECT * FROM reports WHERE status = 'open' ORDER BY report_id DESC LIMIT ? OFFSET ?", (limit, offset)
+            "SELECT * FROM reports WHERE status = 'open'" + condition + " ORDER BY report_id DESC LIMIT ? OFFSET ?", parameters
         ).fetchall()
         return [dict(row) for row in rows]
 
-    async def close_reports(self, article_id: str) -> None:
-        self._conn().execute("UPDATE reports SET status = 'closed' WHERE article_id = ?", (article_id,))
+    async def get_report(self, report_id: int) -> dict[str, Any] | None:
+        row = self._conn().execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
+        return dict(row) if row else None
+
+    async def claim_report_reply(self, report_id: int) -> bool:
+        cursor = self._conn().execute(
+            "UPDATE reports SET reply_status = 'sending' WHERE report_id = ? AND status = 'open' AND reply_status IN ('none', 'failed')",
+            (report_id,),
+        )
+        return cursor.rowcount == 1
+
+    async def finish_report_reply(self, report_id: int, status: str, message_id: int | None = None) -> None:
+        if status not in {"sent", "failed", "uncertain"} or (status == "sent" and (message_id is None or message_id <= 0)):
+            raise ValueError("無效的檢舉回覆結果")
+        self._conn().execute(
+            "UPDATE reports SET reply_status = ?, reply_message_id = ? WHERE report_id = ? AND reply_status = 'sending'",
+            (status, message_id, report_id),
+        )
+
+    async def close_report(self, report_id: int) -> bool:
+        cursor = self._conn().execute(
+            "UPDATE reports SET status = 'closed' WHERE report_id = ? AND status = 'open' AND reply_status <> 'sending'", (report_id,),
+        )
+        return cursor.rowcount == 1
 
     async def oldest_user_publication_between(
         self,

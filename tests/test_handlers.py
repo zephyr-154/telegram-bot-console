@@ -214,7 +214,11 @@ def test_admin_issue_and_report_queues_close_reports_separately(ctx, bot):
         for action in ("pending", "issues:0", "reports:0", "review:XG_ABCDEFGH"):
             await admin_callback(FakeCallback(bot, "admin:" + action, user_id=99), bot, ctx)
         assert "42" in bot.edits[-1]["text"]
-        await admin_callback(FakeCallback(bot, "admin:close_reports:XG_ABCDEFGH", user_id=99), bot, ctx)
+        report_id = (await ctx.db.list_open_reports(10, 0))[0]["report_id"]
+        await admin_callback(FakeCallback(bot, f"admin:report_close:{report_id}", user_id=99), bot, ctx)
+        assert len(await ctx.db.list_open_reports(10, 0)) == 1
+        nonce = (await ctx.db.get_state(99))["payload"]["nonce"]
+        await admin_callback(FakeCallback(bot, f"admin:report_close_yes:{report_id}:{nonce}", user_id=99), bot, ctx)
         assert not await ctx.db.list_open_reports(10, 0)
         assert len(await ctx.db.list_attention_articles(10, 0)) == 1
     asyncio.run(scenario())

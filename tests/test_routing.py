@@ -126,6 +126,26 @@ async def routing_smoke():
             await click("admin:speak_to:all", 99, panel_id)
             await incoming("/cancel", actor=99)
             assert await db.get_state(99) is None
+            article_id = (await db.list_user_articles(42, 10, 0))[0]["article_id"]
+            await incoming(f"/report {article_id} 檢舉原因", actor=43)
+            report_id = (await db.list_open_reports(10, 0))[0]["report_id"]
+            await incoming("/admin", actor=99)
+            panel_id = (await db.get_state(99))["payload"]["panel_message_id"]
+            await click("admin:reports:0", 99, panel_id)
+            await click(f"admin:report:{report_id}", 99, panel_id)
+            await click(f"admin:report_reply:{report_id}", 99, panel_id)
+            await incoming("已處理檢舉", actor=99)
+            reply = await db.get_state(99)
+            data = f"admin:reply_send:{report_id}:" + reply["payload"]["nonce"]
+            await click(data, 99, panel_id)
+            await click(data, 99, panel_id)
+            assert (await db.get_report(report_id))["status"] == "open"
+            replies = [call for call in session.calls if type(call).__name__ == "SendMessage" and call.chat_id == 43 and "管理員回覆" in call.text]
+            assert len(replies) == 1 and "已處理檢舉" in replies[0].text
+            await click(f"admin:report_close:{report_id}", 99, panel_id)
+            closing = await db.get_state(99)
+            await click(f"admin:report_close_yes:{report_id}:" + closing["payload"]["nonce"], 99, panel_id)
+            assert (await db.get_report(report_id))["status"] == "closed"
         finally:
             await db.close()
             await bot.session.close()

@@ -12,6 +12,17 @@ from app.utils import article_status_text, iso_utc, message_link, taipei_now
 logger = logging.getLogger(__name__)
 
 
+def format_report(report: dict) -> str:
+    reply = {"none": "未回覆", "sending": "正在傳送，請稍候", "sent": "已回覆檢舉人",
+             "failed": "回覆未送出，可重新回覆", "uncertain": "回覆結果不明，不會自動重送"}[report["reply_status"]]
+    return (f"檢舉 #{report['report_id']}\n文章：#{report['article_id']}\n"
+            f"狀態：{'待處理' if report['status'] == 'open' else '已結案'}\n回覆：{reply}\n\n檢舉原因：\n{report['reason']}")
+
+
+def format_report_reply(report: dict, text: str) -> str:
+    return f"關於你對 #{report['article_id']} 的檢舉，管理員回覆：\n\n{text}"
+
+
 async def admin_stats(ctx: AppContext) -> tuple[int, int]:
     now = taipei_now(ctx.settings.timezone)
     now_utc = now.astimezone(timezone.utc)

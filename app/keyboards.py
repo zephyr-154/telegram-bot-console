@@ -74,7 +74,7 @@ def admin_article_keyboard(article_id: str, needs_review: bool = False) -> Inlin
     rows = [
         [InlineKeyboardButton(text="強制刪除文章", callback_data=f"admin:force:{article_id}")],
         [InlineKeyboardButton(text="封鎖這位作者", callback_data=f"admin:block:{article_id}")],
-        [InlineKeyboardButton(text="結案此文的檢舉", callback_data=f"admin:close_reports:{article_id}")],
+        [InlineKeyboardButton(text="處理此文的檢舉", callback_data=f"admin:article_reports:{article_id}:0")],
     ]
     if needs_review:
         rows.append([InlineKeyboardButton(text="人工核對結案", callback_data=f"admin:resolve:{article_id}")])
@@ -94,6 +94,26 @@ def admin_force_keyboard(article_id: str, nonce: str) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def admin_report_keyboard(report: dict) -> InlineKeyboardMarkup:
+    report_id = report["report_id"]
+    rows = [[InlineKeyboardButton(text="查看／處理貼文", callback_data=f"admin:review:{report['article_id']}")]]
+    if report["status"] == "open":
+        if report["reply_status"] in {"none", "failed"}:
+            rows.append([InlineKeyboardButton(text="回覆檢舉人", callback_data=f"admin:report_reply:{report_id}")])
+        rows.append([InlineKeyboardButton(text="結案（不另回覆）" if report["reply_status"] in {"none", "failed"} else "結案",
+                                          callback_data=f"admin:report_close:{report_id}")])
+    rows.append([InlineKeyboardButton(text="返回檢舉清單", callback_data="admin:reports:0")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_report_reply_keyboard(report_id: int, nonce: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="確認送出回覆（尚不結案）", callback_data=f"admin:reply_send:{report_id}:{nonce}")],
+        [InlineKeyboardButton(text="重新輸入回覆", callback_data=f"admin:reply_edit:{report_id}:{nonce}")],
+        [InlineKeyboardButton(text="取消回覆／返回檢舉", callback_data=f"admin:report:{report_id}")],
+    ])
 
 
 def page_buttons(prefix: str, page: int, has_next: bool) -> list[InlineKeyboardButton]:

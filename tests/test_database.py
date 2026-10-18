@@ -172,3 +172,44 @@ def test_v04_database_upgrade_backs_up_and_preserves_posts_and_pending_text(tmp_
         assert len(list((tmp_path / "backups").glob("*.sqlite3"))) == 1
         await db.close()
     run(scenario())
+
+
+def test_report_reply_upgrade_preserves_reports_and_backs_up_once(tmp_path):
+    async def scenario():
+        db = Database(tmp_path / "bot.sqlite3")
+        await db.open()
+        await db.create_article("XG_ABCDEFGH", 42, "digest")
+        await db.create_report("XG_ABCDEFGH", 43, "原有檢舉原因", "2026-10-18T00:00:00+00:00", "2026-10-17T00:00:00+00:00")
+        report_id = (await db.list_open_reports(10, 0))[0]["report_id"]
+        db.connection.execute("ALTER TABLE reports DROP COLUMN reply_status")
+        db.connection.execute("ALTER TABLE reports DROP COLUMN reply_message_id")
+        await db.close()
+        await db.open()
+        report = await db.get_report(report_id)
+        assert report["reporter_user_id"] == 43 and report["reason"] == "原有檢舉原因"
+        assert report["status"] == "open" and report["reply_status"] == "none" and report["reply_message_id"] is None
+        assert len(list((tmp_path / "backups").glob("*.sqlite3"))) == 1
+        await db.close()
+        await db.open()
+        assert len(list((tmp_path / "backups").glob("*.sqlite3"))) == 1
+        await db.close()
+    run(scenario())
+
+
+def test_report_reply_claim_survives_restart_and_prevents_duplicate_sends(tmp_path):
+    async def scenario():
+        db = Database(tmp_path / "bot.sqlite3")
+        await db.open()
+        await db.create_article("XG_ABCDEFGH", 42, "digest")
+        await db.create_report("XG_ABCDEFGH", 43, "檢舉", "2026-10-18T00:00:00+00:00", "2026-10-17T00:00:00+00:00")
+        report_id = (await db.list_open_reports(10, 0))[0]["report_id"]
+        assert await db.claim_report_reply(report_id)
+        assert not await db.claim_report_reply(report_id) and not await db.close_report(report_id)
+        await db.close()
+        await db.open()
+        assert (await db.get_report(report_id))["reply_status"] == "uncertain"
+        assert not await db.claim_report_reply(report_id)
+        assert await db.close_report(report_id)
+        assert not await db.close_report(report_id) and not await db.claim_report_reply(report_id)
+        await db.close()
+    run(scenario())
