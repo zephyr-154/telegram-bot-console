@@ -152,9 +152,15 @@ async def my_posts_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) 
     buttons = []
     link = None
     if rows and article["status"] != "deleted":
-        link = message_link(rows[0]["channel_id"], rows[0]["message_id"])
-        if link:
-            buttons.append([InlineKeyboardButton(text="開啟群組／頻道貼文", url=link)])
+        seen_targets = set()
+        for row in rows:
+            if row["channel_id"] in seen_targets:
+                continue
+            seen_targets.add(row["channel_id"])
+            target_link = message_link(row["channel_id"], row["message_id"])
+            if target_link:
+                link = target_link
+                buttons.append([InlineKeyboardButton(text=f"開啟貼文 · {row['channel_id']}", url=target_link)])
         buttons.append([InlineKeyboardButton(text="申請刪除此文", callback_data=f"mine:delete:{article_id}")])
     buttons.append([InlineKeyboardButton(text="返回我的投稿", callback_data="mine:page:0")])
     await _reply_or_edit(

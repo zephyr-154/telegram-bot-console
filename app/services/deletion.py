@@ -29,6 +29,8 @@ async def delete_article_messages(
             return DeleteResult(False, error_code="not_found")
         if article["status"] == "deleted":
             return DeleteResult(False, error_code="already_deleted")
+        if article["status"] == "publishing":
+            return DeleteResult(False, error_code="publication_uncertain" if article.get("publish_error_code") else "publication_in_progress")
 
         published_at = parse_datetime(article.get("published_at_utc"))
         if published_at and utc_now() - published_at >= timedelta(hours=48):

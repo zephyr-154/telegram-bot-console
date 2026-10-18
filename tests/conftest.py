@@ -102,6 +102,7 @@ async def make_pending(ctx, user_id=42, text="這是一篇測試投稿", nonce="
     await ctx.db.replace_pending(
         user_id=user_id, source_chat_id=user_id, source_message_id=1, raw_text=text,
         callback_nonce=nonce, created_at_utc=created or iso_utc(),
+        target_chat_ids=ctx.settings.channel_ids,
     )
     await ctx.db.update_pending_confirmation(user_id, 2)
     return await ctx.db.get_pending_for_user(user_id)

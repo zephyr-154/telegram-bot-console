@@ -15,7 +15,7 @@ from aiogram.exceptions import (
 from aiogram.utils.token import TokenValidationError, validate_token
 
 from app.backup import database_lock
-from app.config import ConfigurationError, read_dotenv
+from app.config import ConfigurationError, parse_ids, read_dotenv
 from app.manager import BotManager, safe_child
 from app.storage import read_json, write_json
 
@@ -27,6 +27,42 @@ CHAT_LABELS = {"group": "群組", "supergroup": "群組", "channel": "頻道"}
 
 def _title(value: str) -> str:
     return "".join(char for char in value if not unicodedata.category(char).startswith("C"))[:160] or "未命名聊天"
+
+
+def _stored_person(value) -> dict | None:
+    if (not isinstance(value, dict) or type(value.get("id")) is not int or value["id"] <= 0
+            or not isinstance(value.get("name"), str) or not isinstance(value.get("username", ""), str)):
+        return None
+    return {"id": value["id"], "name": _title(value["name"] or f"使用者 {value['id']}"),
+            "username": _title(value["username"]) if value.get("username") else ""}
+
+
+def _person(user) -> dict | None:
+    if user is None or user.is_bot:
+        return None
+    return _stored_person({"id": user.id, "name": user.full_name, "username": user.username or ""})
+
+
+def _is_member(member) -> bool:
+    return member.status in {"creator", "administrator", "member"} or member.status == "restricted" and member.is_member
+
+
+def administrator_candidates(chats: list[dict], channel_ids: tuple[int, ...] = ()) -> list[dict]:
+    people = {}
+    for chat in chats:
+        if channel_ids and chat["id"] not in channel_ids:
+            continue
+        records = [(chat.get("inviter"), "邀請人")]
+        records.extend((person, "群組管理員") for person in chat.get("administrators", []))
+        for person, source in records:
+            if person is None:
+                continue
+            entry = people.setdefault(person["id"], {**person, "sources": []})
+            if source == "群組管理員":
+                entry.update(name=person["name"], username=person["username"])
+            if source not in entry["sources"]:
+                entry["sources"].append(source)
+    return sorted(people.values(), key=lambda person: (person["name"].casefold(), person["id"]))
 
 
 class ChatRegistry:
@@ -54,13 +90,18 @@ class ChatRegistry:
                 continue
             result[entry["id"]] = {key: entry[key] for key in ("id", "title", "type", "date", "update_id")}
             result[entry["id"]].update(title=_title(entry["title"]), status=entry.get("status", "member"))
+            admins = entry.get("administrators", [])
+            result[entry["id"]].update(inviter=_stored_person(entry.get("inviter")), administrators=[
+                person for value in (admins if isinstance(admins, list) else []) if (person := _stored_person(value))
+            ])
         return result
 
     def chats(self) -> list[dict]:
         return sorted((entry for entry in self._entries().values() if entry["status"] not in {"left", "kicked"}),
                       key=lambda entry: (entry["title"].casefold(), entry["id"]))
 
-    def remember(self, chat, status: str | None = None, *, date: int | None = None, update_id: int = 0) -> None:
+    def remember(self, chat, status: str | None = None, *, date: int | None = None, update_id: int = 0,
+                 inviter: dict | None = None, administrators: list[dict] | None = None) -> None:
         kind = getattr(chat.type, "value", chat.type)
         if kind not in CHAT_TYPES or chat.id >= 0 or getattr(chat, "is_direct_messages", False):
             return
@@ -72,8 +113,10 @@ class ChatRegistry:
             if stamp < (previous.get("date", 0), previous.get("update_id", 0)):
                 return
             entry = {"id": chat.id, "title": _title(chat.title or ""), "type": kind,
-                     "status": status or previous.get("status", "member"), "date": stamp[0], "update_id": stamp[1]}
-            if (any(entry[key] != previous.get(key) for key in ("id", "title", "type", "status"))
+                     "status": status or previous.get("status", "member"), "date": stamp[0], "update_id": stamp[1],
+                     "inviter": (inviter or None) if inviter is not None else previous.get("inviter"),
+                     "administrators": administrators if administrators is not None else previous.get("administrators", [])}
+            if (any(entry[key] != previous.get(key) for key in ("id", "title", "type", "status", "inviter", "administrators"))
                     or status is not None and stamp != (previous.get("date", 0), previous.get("update_id", 0))):
                 entries[chat.id] = entry
                 write_json(self.path, {"bot_id": self.bot_id, "chats": list(entries.values())})
@@ -85,12 +128,16 @@ class ChatRegistry:
             status = getattr(member.status, "value", member.status)
             if status == "restricted" and not member.is_member:
                 status = "left"
-            self.remember(membership.chat, status, date=int(membership.date.timestamp()), update_id=update.update_id)
+            joining = not _is_member(membership.old_chat_member) and _is_member(member)
+            inviter = (_person(membership.from_user) or {}) if joining else None
+            self.remember(membership.chat, status, date=int(membership.date.timestamp()), update_id=update.update_id, inviter=inviter)
         for key in ("message", "edited_message", "channel_post", "edited_channel_post"):
             message = getattr(update, key)
             if message is not None:
+                joining = any(user.id == self.bot_id for user in (message.new_chat_members or []))
                 self.remember(message.chat, "left" if message.migrate_to_chat_id else None,
-                              date=int((message.edit_date or message.date).timestamp()), update_id=update.update_id)
+                              date=int((message.edit_date or message.date).timestamp()), update_id=update.update_id,
+                              inviter=(_person(message.from_user) or {}) if joining else None)
 
 
 def cached_chats(folder: Path, token: str) -> list[dict]:
@@ -120,8 +167,8 @@ class ChatTrackingMiddleware:
 
 async def _refresh_known(bot, registry: ChatRegistry, channel_id: str) -> None:
     ids = {entry["id"] for entry in registry.chats()}
-    if channel_id.lstrip("-").isdigit() and int(channel_id) < 0:
-        ids.add(int(channel_id))
+    if channel_id:
+        ids.update(parse_ids(channel_id, "CHANNEL_ID"))
     for chat_id in ids:
         try:
             chat = await bot.get_chat(chat_id)
@@ -135,6 +182,43 @@ async def _refresh_known(bot, registry: ChatRegistry, channel_id: str) -> None:
             if known:
                 from aiogram.types import Chat
                 registry.remember(Chat(id=chat_id, title=known["title"], type=known["type"]), "left")
+
+
+def _api_error(exc) -> ConfigurationError:
+    if isinstance(exc, TelegramUnauthorizedError):
+        return ConfigurationError("Token 無效或已被撤銷，請向 BotFather 重新取得")
+    if isinstance(exc, TelegramConflictError):
+        return ConfigurationError("其他程式正在接收這台 Bot 的更新；請先停止原部署後再偵測")
+    if isinstance(exc, TelegramRetryAfter):
+        return ConfigurationError(f"Telegram 暫時限制請求，請在 {exc.retry_after} 秒後重試")
+    if isinstance(exc, (TelegramNetworkError, asyncio.TimeoutError)):
+        return ConfigurationError("無法連線到 Telegram，請確認網路後重試")
+    return ConfigurationError("Telegram 暫時無法取得資料，請稍後重試")
+
+
+async def fetch_administrators(manager: BotManager, name: str, token: str, channel_ids: str):
+    registry = ChatRegistry(manager.folder(name), token)
+    targets = parse_ids(channel_ids, "CHANNEL_ID")
+    failed = []
+    try:
+        async with Bot(token=token, session=AiohttpSession(timeout=20)) as bot:
+            await bot.get_me()
+            for chat_id in targets:
+                try:
+                    chat = await bot.get_chat(chat_id)
+                    membership = await bot.get_chat_member(chat_id, registry.bot_id)
+                    if not _is_member(membership):
+                        registry.remember(chat, "left", administrators=[])
+                        failed.append(chat_id)
+                        continue
+                    members = await bot.get_chat_administrators(chat_id)
+                    people = [person for member in members if (person := _person(member.user))]
+                    registry.remember(chat, membership.status, administrators=people)
+                except (TelegramBadRequest, TelegramForbiddenError):
+                    failed.append(chat_id)
+        return registry.chats(), failed
+    except (TelegramAPIError, asyncio.TimeoutError) as exc:
+        raise _api_error(exc) from None
 
 
 async def watch_chats(manager: BotManager, name: str, token: str, channel_id: str = ""):
@@ -195,15 +279,7 @@ async def watch_chats(manager: BotManager, name: str, token: str, channel_id: st
                     await asyncio.sleep(1)
     except TokenValidationError:
         raise ConfigurationError("Bot Token 格式錯誤，請重新複製完整 Token") from None
-    except TelegramUnauthorizedError:
-        raise ConfigurationError("Token 無效或已被撤銷，請向 BotFather 重新取得") from None
-    except TelegramConflictError:
-        raise ConfigurationError("其他程式正在接收這台 Bot 的更新；請先停止原部署後再偵測") from None
-    except TelegramRetryAfter as exc:
-        raise ConfigurationError(f"Telegram 暫時限制請求，請在 {exc.retry_after} 秒後重試") from None
-    except (TelegramNetworkError, asyncio.TimeoutError):
-        raise ConfigurationError("無法連線到 Telegram，請確認網路後重新開始偵測") from None
-    except TelegramAPIError:
-        raise ConfigurationError("Telegram 暫時無法取得群組資訊，請稍後重試") from None
+    except (TelegramAPIError, asyncio.TimeoutError) as exc:
+        raise _api_error(exc) from None
     except RuntimeError:
         raise ConfigurationError("其他管理或偵測程序正在使用這台機器人，請結束該操作後重試") from None

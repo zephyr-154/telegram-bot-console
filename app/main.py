@@ -55,11 +55,19 @@ async def _maintenance(ctx: AppContext, bot: Bot) -> None:
 
 
 async def _validate_destination(ctx: AppContext, bot: Bot) -> None:
-    chat = await bot.get_chat(ctx.settings.channel_id)
+    for channel_id in ctx.settings.channel_ids:
+        try:
+            await _validate_target(bot, channel_id)
+        except ConfigurationError as exc:
+            raise ConfigurationError(f"目標 {channel_id}：{exc}") from None
+
+
+async def _validate_target(bot: Bot, channel_id: int) -> None:
+    chat = await bot.get_chat(channel_id)
     if chat.type not in {"channel", "group", "supergroup"}:
         raise ConfigurationError("投稿目標必須是群組、超級群組或頻道。")
     me = await bot.get_me()
-    membership = await bot.get_chat_member(ctx.settings.channel_id, me.id)
+    membership = await bot.get_chat_member(channel_id, me.id)
     if membership.status in {"left", "kicked"}:
         raise ConfigurationError("Bot 尚未加入投稿目標或已被移除。")
     if chat.type == "channel" and membership.status != "creator" and not getattr(membership, "can_post_messages", False):

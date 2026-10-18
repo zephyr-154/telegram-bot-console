@@ -147,3 +147,28 @@ def test_save_article_messages_is_idempotent_for_publish_retry(tmp_path) -> None
             await db.close()
 
     run(scenario())
+
+
+def test_v04_database_upgrade_backs_up_and_preserves_posts_and_pending_text(tmp_path):
+    async def scenario():
+        db = Database(tmp_path / "bot.sqlite3")
+        await db.open()
+        await db.create_article("XG_ABCDEFGH", 42, "digest")
+        await db.save_article_messages("XG_ABCDEFGH", -1001, [7])
+        await db.mark_published("XG_ABCDEFGH", "2026-10-18T00:00:00+00:00")
+        await db.replace_pending(user_id=84, source_chat_id=84, source_message_id=8, raw_text="待確認原文",
+                                callback_nonce="old", created_at_utc="2026-10-18T00:00:00+00:00")
+        db.connection.execute("ALTER TABLE articles DROP COLUMN target_chat_ids")
+        db.connection.execute("ALTER TABLE pending_submissions DROP COLUMN target_chat_ids")
+        await db.close()
+        await db.open()
+        assert (await db.get_article("XG_ABCDEFGH"))["target_chat_ids"] is None
+        assert (await db.get_article_messages("XG_ABCDEFGH"))[0]["message_id"] == 7
+        assert (await db.get_pending_for_user(84))["raw_text"] == "待確認原文"
+        backups = list((tmp_path / "backups").glob("*.sqlite3"))
+        assert len(backups) == 1
+        await db.close()
+        await db.open()
+        assert len(list((tmp_path / "backups").glob("*.sqlite3"))) == 1
+        await db.close()
+    run(scenario())

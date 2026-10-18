@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_admin(callback: CallbackQuery, ctx: AppContext) -> bool:
-    return callback.from_user.id == ctx.settings.admin_user_id
+    return callback.from_user.id in ctx.settings.admin_user_ids
 
 
 def _panel_message_id(state: dict | None) -> int | None:
@@ -90,7 +90,7 @@ async def _get_current_admin_state(
     callback: CallbackQuery,
     ctx: AppContext,
 ) -> dict | None:
-    if not callback.message or callback.message.chat.id != ctx.settings.admin_user_id:
+    if not callback.message or callback.message.chat.id != callback.from_user.id or not _is_admin(callback, ctx):
         return None
     state = await ctx.db.get_state(callback.from_user.id)
     if _panel_message_id(state) != callback.message.message_id:
@@ -300,7 +300,7 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
                     return
                 nonce = secrets.token_urlsafe(12)
                 text = (
-                    f"請先到目標群組／頻道搜尋 #{article_id}。若仍有貼文，先手動刪除全部圖片。\n\n"
+                    f"請先到所有目標群組／頻道搜尋 #{article_id}。若仍有貼文，先手動刪除全部副本與圖片。\n\n"
                     "確認目標內已無此文後才可結案。未確認發布的稿件結案後可重新投稿；"
                     "已成功發布的文章仍適用原本的 24 小時重複限制。"
                 )
@@ -388,6 +388,10 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
             if result.success:
                 await ctx.db.close_reports(article_id)
                 text = f"#{article_id} 已刪除。"
+            elif result.error_code == "publication_uncertain":
+                text = "發布結果仍待核對，請先檢查所有目標，手動刪除副本後再人工結案。"
+            elif result.error_code == "publication_in_progress":
+                text = "文章仍在同步發布，請稍後再刪除。"
             elif result.expired:
                 text = "這篇文章已超過 Telegram Bot 可自動刪除的期限，資料仍保留供人工處理。"
             else:

@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS articles (
     created_at_utc TEXT,
     submission_nonce TEXT,
     send_started_at_utc TEXT,
-    publish_error_code TEXT
+    publish_error_code TEXT,
+    target_chat_ids TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_articles_author_time
@@ -51,7 +52,8 @@ CREATE TABLE IF NOT EXISTS pending_submissions (
     confirmation_message_id INTEGER,
     raw_text TEXT NOT NULL,
     callback_nonce TEXT NOT NULL UNIQUE,
-    created_at_utc TEXT NOT NULL
+    created_at_utc TEXT NOT NULL,
+    target_chat_ids TEXT
 );
 
 CREATE TABLE IF NOT EXISTS user_states (
@@ -108,13 +110,16 @@ class Database:
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(SCHEMA)
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(articles)")}
-        if "send_started_at_utc" not in columns:
+        pending_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(pending_submissions)")}
+        if "send_started_at_utc" not in columns or "target_chat_ids" not in columns or "target_chat_ids" not in pending_columns:
             backup_database(self.path, self.path.parent / "backups")
         self.connection.execute("BEGIN IMMEDIATE")
         try:
-            for name in ("created_at_utc", "submission_nonce", "send_started_at_utc", "publish_error_code"):
+            for name in ("created_at_utc", "submission_nonce", "send_started_at_utc", "publish_error_code", "target_chat_ids"):
                 if name not in columns:
                     self.connection.execute(f"ALTER TABLE articles ADD COLUMN {name} TEXT")
+            if "target_chat_ids" not in pending_columns:
+                self.connection.execute("ALTER TABLE pending_submissions ADD COLUMN target_chat_ids TEXT")
             if "send_started_at_utc" not in columns:
                 self.connection.execute(
                     "UPDATE articles SET publish_error_code = 'interrupted_legacy_publish' "
@@ -189,6 +194,7 @@ class Database:
         raw_text: str,
         callback_nonce: str,
         created_at_utc: str,
+        target_chat_ids: tuple[int, ...] = (),
     ) -> dict[str, Any] | None:
         conn = self._conn()
         conn.execute("BEGIN IMMEDIATE")
@@ -203,8 +209,8 @@ class Database:
                 """
                 INSERT INTO pending_submissions
                 (user_id, source_chat_id, source_message_id, raw_text,
-                 callback_nonce, created_at_utc)
-                VALUES (?, ?, ?, ?, ?, ?)
+                 callback_nonce, created_at_utc, target_chat_ids)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -213,6 +219,7 @@ class Database:
                     raw_text,
                     callback_nonce,
                     created_at_utc,
+                    json.dumps(target_chat_ids),
                 ),
             )
             conn.execute("COMMIT")
@@ -333,13 +340,14 @@ class Database:
         author_user_id: int,
         content_hmac: str,
         submission_nonce: str | None = None,
+        target_chat_ids: tuple[int, ...] = (),
     ) -> None:
         self._conn().execute(
             """
-            INSERT INTO articles(article_id, author_user_id, content_hmac, status, created_at_utc, submission_nonce)
-            VALUES (?, ?, ?, 'publishing', ?, ?)
+            INSERT INTO articles(article_id, author_user_id, content_hmac, status, created_at_utc, submission_nonce, target_chat_ids)
+            VALUES (?, ?, ?, 'publishing', ?, ?, ?)
             """,
-            (article_id, author_user_id, content_hmac, iso_utc(), submission_nonce),
+            (article_id, author_user_id, content_hmac, iso_utc(), submission_nonce, json.dumps(target_chat_ids)),
         )
 
     async def delete_article(self, article_id: str) -> None:
@@ -360,6 +368,7 @@ class Database:
         article_id: str,
         channel_id: int,
         message_ids: list[int],
+        sequence_offset: int = 0,
     ) -> None:
         if len(set(message_ids)) != len(message_ids):
             raise sqlite3.IntegrityError("同一篇文章不可重複保存 Telegram message ID")
@@ -367,7 +376,7 @@ class Database:
         conn = self._conn()
         conn.execute("BEGIN IMMEDIATE")
         try:
-            for sequence_no, message_id in enumerate(message_ids, 1):
+            for sequence_no, message_id in enumerate(message_ids, sequence_offset + 1):
                 by_sequence = conn.execute(
                     """
                     SELECT channel_id, message_id

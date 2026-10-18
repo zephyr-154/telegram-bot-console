@@ -10,8 +10,8 @@ from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.output.vt100 import Vt100_Output
 
 from app.manager import BotManager
-from app.settings_editor import initial_values, save_config
-from app.config import read_dotenv
+from app.settings_editor import initial_values, render_env, save_config
+from app.config import parse_ids, read_dotenv
 from app.terminal import select, settings_panel, text_row
 from app.chat_discovery import ChatRegistry
 from aiogram.types import Chat
@@ -77,7 +77,7 @@ def test_settings_never_renders_existing_token(profile):
 def test_profile_actions_are_reachable_with_arrow_keys(profile):
     manager, _, _ = profile
     with create_pipe_input() as pipe:
-        pipe.send_text("\x1b[B" * 8 + "\r")
+        pipe.send_text("\x1b[B" * 9 + "\r")
         assert settings_panel(manager, "school", input=pipe, output=DummyOutput()) == "start"
 
 
@@ -162,6 +162,57 @@ def test_discovery_error_keeps_manual_target_input_available(profile, monkeypatc
         pipe.send_text("\x1b[B\r")
         settings_panel(manager, "school", input=pipe, output=DummyOutput())
     assert read_dotenv(folder / ".env")["CHANNEL_ID"] == "-10055"
+
+
+def test_multiple_targets_can_be_checked_searched_and_unchecked(profile):
+    manager, folder, values = profile
+    registry = ChatRegistry(folder, values["BOT_TOKEN"])
+    for number, title in ((-100123, "Zulu 現有群組"), (-1009, "Campus 頻道"), (-1008, "Communications 群組")):
+        registry.remember(Chat(id=number, title=title, type="supergroup"))
+    with create_pipe_input() as pipe:
+        pipe.send_text("\x1b[B" * 2 + "\r\x1b[B \x01\x0bCommunications\x1b[B \x1b[B \r\x13\x1b")
+        settings_panel(manager, "school", input=pipe, output=DummyOutput())
+    saved = read_dotenv(folder / ".env")
+    assert set(parse_ids(saved["CHANNEL_ID"], "CHANNEL_ID")) == {-1009, -1008}
+    assert saved["CONTENT_HASH_SECRET"] == values["CONTENT_HASH_SECRET"]
+
+
+def test_multiple_admins_can_be_checked_and_existing_admin_removed(profile):
+    manager, folder, values = profile
+    registry = ChatRegistry(folder, values["BOT_TOKEN"])
+    registry.remember(Chat(id=-100123, title="School", type="supergroup"), administrators=[
+        {"id": 42, "name": "Alpha", "username": "alpha"},
+        {"id": 84, "name": "Beta", "username": "beta"},
+        {"id": 126, "name": "Charlie", "username": ""},
+    ])
+    with create_pipe_input() as pipe:
+        pipe.send_text("\x1b[B" * 3 + "\r\x1b[B \x1b[B \x1b[B \r\x13\x1b")
+        settings_panel(manager, "school", input=pipe, output=DummyOutput())
+    assert set(parse_ids(read_dotenv(folder / ".env")["ADMIN_USER_ID"], "ADMIN_USER_ID")) == {84, 126}
+
+
+def test_admin_fetch_uses_unsaved_token_and_does_not_require_existing_admin(tmp_path, monkeypatch):
+    import app.terminal as terminal
+    manager = BotManager(tmp_path / "managed")
+    folder = manager.create("new")
+    font = folder / "font.ttf"
+    font.touch()
+    values = initial_values(folder / ".env")
+    values.update(FONT_REGULAR_PATH=str(font), FONT_BOLD_PATH=str(font))
+    (folder / ".env").write_bytes(render_env(None, values))
+    with create_pipe_input() as pipe:
+        async def fetch(manager_arg, name, token, targets):
+            assert token == "9988776655:offline_token" and targets == "-1001"
+            assert read_dotenv(folder / ".env")["BOT_TOKEN"] == ""
+            pipe.send_text("\x1b[A\r\x1b[B\r\x13\x1b")
+            return [{"id": -1001, "title": "School", "type": "supergroup", "administrators": [
+                {"id": 84, "name": "Fresh admin", "username": "fresh"},
+            ]}], []
+        monkeypatch.setattr(terminal, "fetch_administrators", fetch)
+        pipe.send_text("\r9988776655:offline_token\r\x1b[B\x1b[B\r-1001\r\x1b[B\x1b[B\r")
+        settings_panel(manager, "new", input=pipe, output=DummyOutput())
+    saved = read_dotenv(folder / ".env")
+    assert saved["BOT_TOKEN"] == "9988776655:offline_token" and saved["ADMIN_USER_ID"] == "84"
 
 
 def test_long_chinese_bot_name_does_not_hide_status_column():

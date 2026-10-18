@@ -93,7 +93,7 @@ async def clear_user_operation(message: Message, bot: Bot, ctx: AppContext, user
 
 @router.message(Command("hhvszephyr"), F.chat.type == ChatType.PRIVATE)
 async def admin_command(message: Message, bot: Bot, ctx: AppContext) -> None:
-    if message.from_user.id != ctx.settings.admin_user_id:
+    if message.from_user.id not in ctx.settings.admin_user_ids:
         return
     user_id = message.from_user.id
     if ctx.user_locks[user_id].locked():
@@ -138,7 +138,7 @@ async def private_text(message: Message, bot: Bot, ctx: AppContext) -> None:
         return
 
     state = await ctx.db.get_state(user_id)
-    if state and state["state"].startswith("admin_") and user_id == ctx.settings.admin_user_id:
+    if state and state["state"].startswith("admin_") and user_id in ctx.settings.admin_user_ids:
         await _handle_admin_text(message, bot, ctx, state)
         return
     if state and state["state"] == "delete_wait_id":
@@ -170,6 +170,7 @@ async def private_text(message: Message, bot: Bot, ctx: AppContext) -> None:
             raw_text=text,
             callback_nonce=nonce,
             created_at_utc=iso_utc(),
+            target_chat_ids=ctx.settings.channel_ids,
         )
         if old:
             await delete_private_messages(
@@ -180,13 +181,13 @@ async def private_text(message: Message, bot: Bot, ctx: AppContext) -> None:
         try:
             try:
                 preview = await message.answer(
-                    f"確定要這樣發布嗎？\n\n{text}", reply_markup=submission_keyboard(nonce),
+                    f"確定要這樣發布嗎？\n將同步發布至 {len(ctx.settings.channel_ids)} 個群組／頻道。\n\n{text}", reply_markup=submission_keyboard(nonce),
                 )
             except TelegramBadRequest as exc:
                 if "too long" not in str(exc).casefold():
                     raise
                 preview = await message.answer(
-                    "請確認你上方的原文，確定要發布嗎？", reply_markup=submission_keyboard(nonce),
+                    f"請確認你上方的原文，確定要發布嗎？\n將同步發布至 {len(ctx.settings.channel_ids)} 個群組／頻道。", reply_markup=submission_keyboard(nonce),
                 )
             await ctx.db.update_pending_confirmation(user_id, preview.message_id)
         except Exception:
@@ -479,6 +480,10 @@ async def deletion_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) 
         result = await delete_article_messages(ctx, bot, article_id)
         if result.success:
             await callback.message.answer(f"#{article_id} 已刪除")
+        elif result.error_code == "publication_uncertain":
+            await callback.message.answer("發布結果仍待核對，請聯絡管理員確認所有目標群組／頻道。")
+        elif result.error_code == "publication_in_progress":
+            await callback.message.answer("文章仍在同步發布，請稍後再刪除。")
         elif result.expired:
             await callback.message.answer(
                 "這篇文章已超過 Telegram Bot 可自動刪除的期限，請聯絡管理員手動刪除。"

@@ -10,14 +10,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram.utils.token import TokenValidationError, validate_token
 
-from app.config import ConfigurationError, read_dotenv, settings_from_values
+from app.config import ConfigurationError, parse_ids, read_dotenv, settings_from_values
 from app.storage import atomic_write as _atomic_write
 
 
 FIELDS = {
     "BOT_TOKEN": "Bot Token",
-    "CHANNEL_ID": "目標群組／頻道 ID",
-    "ADMIN_USER_ID": "管理員 User ID",
+    "CHANNEL_ID": "目標群組／頻道 ID（多選）",
+    "ADMIN_USER_ID": "管理員 User ID（多選）",
     "FONT_REGULAR_PATH": "一般字型路徑",
     "FONT_BOLD_PATH": "粗體字型路徑",
     "TIMEZONE": "時區",
@@ -64,12 +64,7 @@ def validate_field(key: str, value: str, base_dir: Path) -> None:
         if value.startswith("123456789:") or "replace_me" in value:
             raise ConfigurationError("請填入真實 Bot Token")
     elif key in {"CHANNEL_ID", "ADMIN_USER_ID"}:
-        try:
-            number = int(value)
-        except ValueError:
-            raise ConfigurationError(f"{key} 必須是整數") from None
-        if (key == "CHANNEL_ID" and number >= 0) or (key == "ADMIN_USER_ID" and number <= 0):
-            raise ConfigurationError("群組／頻道 ID 必須是負整數；管理員 ID 必須是正整數")
+        parse_ids(value, key)
     elif key == "TIMEZONE":
         try:
             ZoneInfo(value)

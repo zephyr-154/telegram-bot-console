@@ -5,21 +5,22 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from aiogram.exceptions import TelegramConflictError, TelegramUnauthorizedError
-from aiogram.methods import GetMe, GetUpdates
-from aiogram.types import Chat, ChatMemberLeft, ChatMemberMember, ChatMemberUpdated, Message, Update, User
+from aiogram.exceptions import TelegramConflictError, TelegramForbiddenError, TelegramUnauthorizedError
+from aiogram.methods import GetChatAdministrators, GetMe, GetUpdates
+from aiogram.types import Chat, ChatMemberAdministrator, ChatMemberLeft, ChatMemberMember, ChatMemberUpdated, Message, Update, User
 
 from app import chat_discovery
 from app.backup import database_lock
-from app.chat_discovery import ChatRegistry, ChatTrackingMiddleware, watch_chats
-from app.config import ConfigurationError
+from app.chat_discovery import ChatRegistry, ChatTrackingMiddleware, administrator_candidates, fetch_administrators, watch_chats
+from app.config import ConfigurationError, read_dotenv
 from app.manager import BotManager
 from app.storage import write_json
 
 
 TOKEN = "9988776655:offline_test_token"
 BOT_USER = User(id=9988776655, is_bot=True, first_name="Test bot")
-ACTOR = User(id=42, is_bot=False, first_name="Not saved")
+ACTOR = User(id=42, is_bot=False, first_name="Invite Admin")
+AUTHOR = User(id=43, is_bot=False, first_name="Not saved")
 NOW = datetime(2026, 10, 18, tzinfo=timezone.utc)
 
 
@@ -34,7 +35,7 @@ def joined(number=1, *, chat_id=-1001, title="測試群組", status="member", ki
 def message(number=2, *, chat_id=-1001, title="測試群組", text="不應儲存的投稿", kind="supergroup"):
     return Update(update_id=number, **{"channel_post" if kind == "channel" else "message": Message(
         message_id=number, date=NOW, chat=Chat(id=chat_id, type="private" if chat_id > 0 else kind, title=title),
-        from_user=ACTOR, text=text,
+        from_user=AUTHOR, text=text,
     )})
 
 
@@ -51,6 +52,8 @@ class FakeBot:
         self.error, self.webhook = None, ""
         self.chats = {-1001: Chat(id=-1001, type="supergroup", title="測試群組")}
         self.members = {}
+        self.administrators = {}
+        self.failed_admin_chats = set()
 
     async def __aenter__(self):
         return self
@@ -80,6 +83,12 @@ class FakeBot:
     async def get_chat_member(self, chat_id, user_id):
         assert user_id == BOT_USER.id
         return SimpleNamespace(status=self.members.get(chat_id, "member"), is_member=True)
+
+    async def get_chat_administrators(self, chat_id):
+        self.calls.append(("admins", chat_id))
+        if chat_id in self.failed_admin_chats:
+            raise TelegramForbiddenError(method=GetChatAdministrators(chat_id=chat_id), message=TOKEN)
+        return [SimpleNamespace(user=person) for person in self.administrators.get(chat_id, [])]
 
 
 @pytest.fixture
@@ -300,3 +309,54 @@ def test_tracking_retries_a_short_registry_lock_conflict(manager, monkeypatch):
         return "processed once"
     assert asyncio.run(ChatTrackingMiddleware(registry)(handler, joined(), {})) == "processed once"
     assert len(attempts) == 2 and registry.chats()[0]["id"] == -1001
+
+
+def test_only_real_join_records_inviter_and_promotion_does_not_replace_it(manager):
+    registry = ChatRegistry(manager.folder("school"), TOKEN)
+    registry.observe(joined())
+    assert registry.chats()[0]["inviter"]["id"] == ACTOR.id
+    values = {key: False for key, field in ChatMemberAdministrator.model_fields.items() if field.is_required()}
+    values.update(user=BOT_USER, status="administrator")
+    promotion = joined(2).model_copy(update={"my_chat_member": joined(2).my_chat_member.model_copy(update={
+        "old_chat_member": ChatMemberMember(user=BOT_USER),
+        "new_chat_member": ChatMemberAdministrator(**values),
+        "from_user": User(id=99, is_bot=False, first_name="Promoter"),
+    })})
+    registry.observe(promotion)
+    assert registry.chats()[0]["inviter"]["id"] == ACTOR.id
+    registry.observe(joined(3, status="left"))
+    anonymous_rejoin = joined(4).model_copy(update={"my_chat_member": joined(4).my_chat_member.model_copy(update={"from_user": BOT_USER})})
+    registry.observe(anonymous_rejoin)
+    assert registry.chats()[0]["inviter"] is None
+
+
+def test_live_admin_fetch_deduplicates_people_filters_bots_and_never_grants_access(manager, fake_bot):
+    fake_bot.chats[-1002] = Chat(id=-1002, title="Other", type="channel")
+    another = User(id=84, is_bot=False, first_name="Another admin", username="another")
+    renamed = ACTOR.model_copy(update={"first_name": "Current Admin", "username": "current"})
+    fake_bot.administrators = {-1001: [renamed, BOT_USER], -1002: [renamed, another]}
+    registry = ChatRegistry(manager.folder("school"), TOKEN)
+    registry.observe(joined())
+    async def scenario():
+        found, failed = await fetch_administrators(manager, "school", TOKEN, "-1001,-1002")
+        assert failed == [] and fake_bot.closed
+        people = administrator_candidates(found, (-1001, -1002))
+        assert {person["id"] for person in people} == {42, 84}
+        assert set(next(person for person in people if person["id"] == 42)["sources"]) == {"邀請人", "群組管理員"}
+        assert next(person for person in people if person["id"] == 42)["name"] == "Current Admin"
+        assert [person["id"] for person in administrator_candidates(found, (-1001,))] == [42]
+        assert fake_bot.calls == [("admins", -1001), ("admins", -1002)]
+        assert read_dotenv(manager.folder("school") / ".env")["ADMIN_USER_ID"] == ""
+    asyncio.run(scenario())
+
+
+def test_admin_fetch_keeps_successful_groups_when_another_is_inaccessible(manager, fake_bot):
+    fake_bot.chats[-1002] = Chat(id=-1002, title="Other", type="channel")
+    fake_bot.administrators[-1001] = [ACTOR]
+    fake_bot.failed_admin_chats.add(-1002)
+    async def scenario():
+        found, failed = await fetch_administrators(manager, "school", TOKEN, "-1001,-1002")
+        assert failed == [-1002]
+        assert [person["id"] for person in administrator_candidates(found)] == [42]
+        assert fake_bot.closed
+    asyncio.run(scenario())

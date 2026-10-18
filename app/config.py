@@ -49,12 +49,15 @@ def _required(values: Mapping[str, str], name: str) -> str:
     return value
 
 
-def _int_setting(values: Mapping[str, str], name: str) -> int:
-    raw = _required(values, name)
+def parse_ids(raw: str, name: str) -> tuple[int, ...]:
     try:
-        return int(raw)
-    except ValueError as exc:
-        raise ConfigurationError(f"設定 {name} 必須是整數") from exc
+        numbers = tuple(dict.fromkeys(int(part.strip()) for part in raw.replace("，", ",").split(",")))
+    except ValueError:
+        raise ConfigurationError(f"{name} 請填數字 ID；多個 ID 以逗號分隔") from None
+    invalid = any(number >= 0 for number in numbers) if name == "CHANNEL_ID" else any(number <= 0 for number in numbers)
+    if invalid:
+        raise ConfigurationError("群組／頻道 ID 必須是負整數；管理員 ID 必須是正整數")
+    return numbers
 
 
 def _resolve_path(value: str, base_dir: Path) -> Path:
@@ -74,13 +77,23 @@ class Settings:
     telegram_logo_path: Path | None
     content_hash_secret: str
     timezone: str = "Asia/Taipei"
+    additional_channel_ids: tuple[int, ...] = ()
+    additional_admin_user_ids: tuple[int, ...] = ()
+
+    @property
+    def channel_ids(self) -> tuple[int, ...]:
+        return tuple(dict.fromkeys((self.channel_id, *self.additional_channel_ids)))
+
+    @property
+    def admin_user_ids(self) -> tuple[int, ...]:
+        return tuple(dict.fromkeys((self.admin_user_id, *self.additional_admin_user_ids)))
 
     def validate_runtime(self) -> None:
         if self.bot_token.startswith("123456789:") or "replace_me" in self.bot_token:
             raise ConfigurationError("BOT_TOKEN 尚未填入真實 Bot Token")
-        if self.channel_id == 0:
-            raise ConfigurationError("CHANNEL_ID 不可為 0")
-        if self.admin_user_id <= 0:
+        if any(channel_id >= 0 for channel_id in self.channel_ids):
+            raise ConfigurationError("CHANNEL_ID 必須是負整數")
+        if any(user_id <= 0 for user_id in self.admin_user_ids):
             raise ConfigurationError("ADMIN_USER_ID 必須是正整數")
         if len(self.content_hash_secret) < 32 or "replace_with" in self.content_hash_secret:
             raise ConfigurationError("CONTENT_HASH_SECRET 至少需要 32 個字元的隨機秘密")
@@ -102,10 +115,14 @@ class Settings:
 
 def settings_from_values(values: Mapping[str, str], base_dir: Path) -> Settings:
     logo_raw = values.get("TELEGRAM_LOGO_PATH", "").strip()
+    channel_ids = parse_ids(_required(values, "CHANNEL_ID"), "CHANNEL_ID")
+    admin_ids = parse_ids(_required(values, "ADMIN_USER_ID"), "ADMIN_USER_ID")
     return Settings(
         bot_token=_required(values, "BOT_TOKEN"),
-        channel_id=_int_setting(values, "CHANNEL_ID"),
-        admin_user_id=_int_setting(values, "ADMIN_USER_ID"),
+        channel_id=channel_ids[0],
+        admin_user_id=admin_ids[0],
+        additional_channel_ids=channel_ids[1:],
+        additional_admin_user_ids=admin_ids[1:],
         database_path=_resolve_path(values.get("DATABASE_PATH", "data/bot.sqlite3"), base_dir),
         temp_dir=_resolve_path(values.get("TEMP_DIR", "data/tmp"), base_dir),
         font_regular_path=_resolve_path(_required(values, "FONT_REGULAR_PATH"), base_dir),

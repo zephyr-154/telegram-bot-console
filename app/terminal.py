@@ -21,8 +21,8 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame, TextArea
 
 from app import __version__
-from app.chat_discovery import CHAT_LABELS, cached_chats, watch_chats
-from app.config import ConfigurationError, read_dotenv
+from app.chat_discovery import CHAT_LABELS, administrator_candidates, cached_chats, fetch_administrators, watch_chats
+from app.config import ConfigurationError, parse_ids, read_dotenv
 from app.manager import BotManager
 from app.settings_editor import FIELDS, initial_values, save_config, validate_field
 
@@ -123,39 +123,67 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
     original = path.read_bytes()
     values = initial_values(path)
     actions = {"start": "背景啟動", "stop": "停止機器人", "restart": "重啟機器人", "backup": "立即備份", "logs": "查看最近日誌", "delete": "刪除機器人"}
-    basic_keys = ["BOT_TOKEN", "discover", *(key for key in FIELDS if key != "BOT_TOKEN")]
+    basic_keys = ["BOT_TOKEN", "discover", "CHANNEL_ID", "ADMIN_USER_ID", "fetch_admins",
+                  *(key for key in FIELDS if key not in {"BOT_TOKEN", "CHANNEL_ID", "ADMIN_USER_ID"})]
     keys = basic_keys + list(actions)
     index, editing, dirty, message = 0, False, False, ""
     chats = cached_chats(folder, values["BOT_TOKEN"])
     discovery_task = None
+    admins_task = None
     discovery_notice = ""
-    channel_index, channel_original = 0, ""
+    selection_index, selection_original = 0, ""
+    selected_ids, selection_changed = set(), False
     cursor_rows = {}
     message_style = "class:muted"
     field = TextArea(multiline=False, height=1, style="class:input", password=Condition(lambda: keys[index] == "BOT_TOKEN"))
     bindings = KeyBindings()
     app = None
 
-    def channel_choices():
-        query = "" if field.text == channel_original else field.text.strip().casefold()
-        return [chat for chat in chats if query in chat["title"].casefold() or query in str(chat["id"])]
+    def configured_ids(key):
+        try:
+            return parse_ids(values[key], key)
+        except ConfigurationError:
+            return ()
+
+    def id_choices():
+        key = keys[index]
+        if key == "CHANNEL_ID":
+            choices = list(chats)
+        else:
+            choices = [{**person, "title": person["name"], "type": "administrator"}
+                       for person in administrator_candidates(chats, configured_ids("CHANNEL_ID"))]
+        known = {choice["id"] for choice in choices}
+        for number in (*configured_ids(key), *sorted(selected_ids)):
+            if number not in known:
+                choices.append({"id": number, "title": "手動設定", "type": "manual"})
+                known.add(number)
+        query = "" if field.text == selection_original or any(mark in field.text for mark in ",，") else field.text.strip().casefold()
+        return sorted((choice for choice in choices if query in choice["title"].casefold()
+                       or query in str(choice["id"]) or query in choice.get("username", "").casefold()),
+                      key=lambda choice: (choice["title"].casefold(), choice["id"]))
 
     def input_changed(_):
-        nonlocal channel_index
-        channel_index = 0
+        nonlocal selection_index, selection_changed
+        selection_index = 0
+        selection_changed = False
 
     field.buffer.on_text_changed += input_changed
 
+    def replace_chats(found):
+        nonlocal chats, selection_index
+        choices = id_choices() if editing and keys[index] in {"CHANNEL_ID", "ADMIN_USER_ID"} else []
+        selected_id = choices[selection_index - 1]["id"] if 0 < selection_index <= len(choices) else None
+        chats = found
+        if selected_id is not None:
+            selection_index = next((number for number, choice in enumerate(id_choices(), 1)
+                                    if choice["id"] == selected_id), 0)
+
     async def discover(token):
-        nonlocal chats, discovery_notice, channel_index
+        nonlocal discovery_notice
         try:
             async for found, notice in watch_chats(manager, name, token, values["CHANNEL_ID"]):
-                choices = channel_choices() if editing and keys[index] == "CHANNEL_ID" else []
-                selected_id = choices[channel_index - 1]["id"] if 0 < channel_index <= len(choices) else None
-                chats, discovery_notice = found, notice
-                if selected_id is not None:
-                    channel_index = next((number for number, chat in enumerate(channel_choices(), 1)
-                                          if chat["id"] == selected_id), 0)
+                replace_chats(found)
+                discovery_notice = notice
                 app.invalidate()
         except ConfigurationError as exc:
             discovery_notice = str(exc)
@@ -168,13 +196,37 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
             discovery_task = None
         app.invalidate()
 
+    async def load_administrators(token, targets):
+        nonlocal message, message_style
+        try:
+            found, failed = await fetch_administrators(manager, name, token, targets)
+            if values["BOT_TOKEN"] != token or values["CHANNEL_ID"] != targets:
+                message = "設定已變更，請重新拉取管理員名單"
+                return
+            replace_chats(found)
+            count = len(administrator_candidates(chats, configured_ids("CHANNEL_ID")))
+            message = f"已記錄 {count} 位候選，請到管理員欄位選取；儲存後才會授權"
+            if failed:
+                message += f"；{len(failed)} 個目標無法讀取，仍可能顯示已記錄資料"
+            message_style = "class:muted"
+        except ConfigurationError as exc:
+            message, message_style = str(exc), "class:error"
+        except (OSError, RuntimeError):
+            message, message_style = "無法更新管理員清單，請稍後重試", "class:error"
+
+    def administrators_done(task):
+        nonlocal admins_task
+        if admins_task is task:
+            admins_task = None
+        app.invalidate()
+
     def apply_edit():
         nonlocal editing, dirty, message, message_style, chats, discovery_notice
         key = keys[index]
-        if key == "CHANNEL_ID" and channel_index:
-            choices = channel_choices()
-            if channel_index <= len(choices):
-                field.text = str(choices[channel_index - 1]["id"])
+        if key in {"CHANNEL_ID", "ADMIN_USER_ID"} and selection_index and not selection_changed:
+            choices = id_choices()
+            if selection_index <= len(choices):
+                field.text = str(choices[selection_index - 1]["id"])
         value = field.text.strip()
         if key == "BOT_TOKEN" and not value:
             editing = False
@@ -184,9 +236,13 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
             value = value[1:-1]
         try:
             validate_field(key, value, folder)
+            if key in {"CHANNEL_ID", "ADMIN_USER_ID"}:
+                value = ",".join(map(str, parse_ids(value, key)))
             if key == "BOT_TOKEN" and values[key] != value:
                 if discovery_task is not None:
                     discovery_task.cancel()
+                if admins_task is not None:
+                    admins_task.cancel()
                 chats = cached_chats(folder, value)
                 discovery_notice = "Token 已變更，請重新開始偵測"
             dirty |= values[key] != value
@@ -208,23 +264,53 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
         nonlocal index
         index = min(len(keys) - 1, index + 1)
 
-    @bindings.add("up", filter=Condition(lambda: editing and keys[index] == "CHANNEL_ID"))
+    @bindings.add("up", filter=Condition(lambda: editing and keys[index] in {"CHANNEL_ID", "ADMIN_USER_ID"}))
     def previous_chat(event):
-        nonlocal channel_index
-        channel_index = max(0, channel_index - 1)
+        nonlocal selection_index
+        selection_index = max(0, selection_index - 1)
 
-    @bindings.add("down", filter=Condition(lambda: editing and keys[index] == "CHANNEL_ID"))
+    @bindings.add("down", filter=Condition(lambda: editing and keys[index] in {"CHANNEL_ID", "ADMIN_USER_ID"}))
     def next_chat(event):
-        nonlocal channel_index
-        channel_index = min(len(channel_choices()), channel_index + 1)
+        nonlocal selection_index
+        selection_index = min(len(id_choices()), selection_index + 1)
+
+    @bindings.add(" ", filter=Condition(lambda: editing and keys[index] in {"CHANNEL_ID", "ADMIN_USER_ID"} and selection_index > 0))
+    def toggle_id(event):
+        nonlocal selection_index, selection_original, selection_changed
+        choices = id_choices()
+        if selection_index > len(choices):
+            return
+        number = choices[selection_index - 1]["id"]
+        if number in selected_ids:
+            selected_ids.remove(number)
+        else:
+            selected_ids.add(number)
+        field.text = ",".join(map(str, sorted(selected_ids)))
+        field.buffer.cursor_position = len(field.text)
+        selection_original, selection_changed = field.text, True
+        selection_index = next((pos for pos, choice in enumerate(id_choices(), 1) if choice["id"] == number), 0)
 
     @bindings.add("enter")
     def edit(event):
-        nonlocal editing, message, message_style, discovery_task, discovery_notice, channel_index, channel_original
+        nonlocal editing, message, message_style, discovery_task, discovery_notice, admins_task
+        nonlocal selection_index, selection_original, selected_ids, selection_changed
         if editing:
             apply_edit()
             return
         key = keys[index]
+        if key == "fetch_admins":
+            if admins_task is not None:
+                return
+            try:
+                validate_field("BOT_TOKEN", values["BOT_TOKEN"], folder)
+                validate_field("CHANNEL_ID", values["CHANNEL_ID"], folder)
+            except ConfigurationError as exc:
+                message, message_style = str(exc), "class:error"
+                return
+            message, message_style = "正在讀取所選群組／頻道的管理員…", "class:muted"
+            admins_task = event.app.create_background_task(load_administrators(values["BOT_TOKEN"], values["CHANNEL_ID"]))
+            admins_task.add_done_callback(administrators_done)
+            return
         if key == "discover":
             if discovery_task is not None:
                 discovery_task.cancel()
@@ -247,11 +333,12 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
             return
         field.buffer.document = Document("" if key == "BOT_TOKEN" else values[key])
         field.buffer.cursor_position = len(field.text)
-        if key == "CHANNEL_ID":
-            channel_index, channel_original = 0, field.text
+        if key in {"CHANNEL_ID", "ADMIN_USER_ID"}:
+            selection_index, selection_original = 0, field.text
+            selected_ids, selection_changed = set(configured_ids(key)), False
         message, editing = "Token 留空保留原值" if key == "BOT_TOKEN" else "Enter 套用此欄位；Esc 取消", True
-        if key == "CHANNEL_ID":
-            message = "輸入 ID／搜尋群組名稱 · ↓ 選取清單 · Enter 套用 · Esc 取消"
+        if key in {"CHANNEL_ID", "ADMIN_USER_ID"}:
+            message = "ID 用逗號分隔／名稱搜尋 · ↑↓ 選擇 · Space 多選 · Enter 單選／套用 · Esc 取消"
         message_style = "class:muted"
         event.app.layout.focus(field)
 
@@ -286,7 +373,7 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
         event.app.exit()
 
     def content():
-        nonlocal channel_index
+        nonlocal selection_index
         result = [("class:section", "  基本設定\n")]
         row = 1
         for pos, key in enumerate(basic_keys):
@@ -294,31 +381,45 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
             if key == "discover":
                 label = "偵測群組／頻道"
                 value = ("偵測中 · Enter 停止" if discovery_task is not None else "Enter 開始偵測") + f" · 已記錄 {len(chats)} 個"
+            elif key == "fetch_admins":
+                label = "拉取群組管理員"
+                count = len(administrator_candidates(chats, configured_ids("CHANNEL_ID")))
+                value = "讀取中…" if admins_task is not None else f"Enter 讀取 · 已記錄 {count} 位候選"
             else:
                 label = FIELDS[key]
                 value = "••••••••（已設定）" if key == "BOT_TOKEN" and values[key] else values[key] or "（未設定）"
-                if key == "CHANNEL_ID" and not editing:
-                    chosen = next((chat for chat in chats if str(chat["id"]) == values[key]), None)
-                    if chosen:
-                        value = f"{chosen['title']}  {values[key]}"
+                if key in {"CHANNEL_ID", "ADMIN_USER_ID"} and not editing:
+                    ids = configured_ids(key)
+                    if len(ids) > 1:
+                        unit = "個" if key == "CHANNEL_ID" else "位"
+                        value = f"已選 {len(ids)} {unit} · Enter 查看／修改"
+                    elif key == "CHANNEL_ID":
+                        chosen = next((chat for chat in chats if str(chat["id"]) == values[key]), None)
+                        if chosen:
+                            value = f"{chosen['title']}  {values[key]}"
             result.append(("class:selected" if pos == index else "", (" › " if pos == index else "   ") + text_row(label, value) + "\n"))
             row += 1
-            if key == "CHANNEL_ID" and editing and keys[index] == key:
-                choices = channel_choices()
-                channel_index = min(channel_index, len(choices))
-                result.append(("class:selected" if channel_index == 0 else "class:muted", "     手動輸入 ID／輸入名稱搜尋\n"))
+            if key in {"CHANNEL_ID", "ADMIN_USER_ID"} and editing and keys[index] == key:
+                choices = id_choices()
+                selection_index = min(selection_index, len(choices))
+                result.append(("class:selected" if selection_index == 0 else "class:muted", "     手動輸入 ID（逗號分隔）／輸入名稱搜尋\n"))
                 row += 1
-                start = max(0, channel_index - 6)
+                start = max(0, selection_index - 6)
                 for number, chat in enumerate(choices[start:start + 6], start + 1):
-                    selected = number == channel_index
-                    label = ("› " if selected else "  ") + chat["title"]
+                    selected = number == selection_index
+                    label = ("› " if selected else "  ") + ("[x] " if chat["id"] in selected_ids else "[ ] ") + chat["title"]
+                    detail = f"{chat['id']} · {CHAT_LABELS.get(chat['type'], '手動設定')}"
+                    if key == "ADMIN_USER_ID" and chat["type"] != "manual":
+                        account = " @" + chat["username"] if chat.get("username") else ""
+                        detail = f"{chat['id']}{account} · {'／'.join(chat['sources'])}"
                     result.append(("class:selected" if selected else "class:muted",
-                                   "     " + text_row(label, f"{chat['id']} · {CHAT_LABELS[chat['type']]}") + "\n"))
+                                   "     " + text_row(label, detail) + "\n"))
                     if selected:
                         cursor_rows[pos] = row
                     row += 1
                 if not choices:
-                    result.append(("class:muted", "     尚無符合的群組；可手動輸入，或先開始偵測再邀請機器人\n"))
+                    hint = "先開始偵測並邀請機器人" if key == "CHANNEL_ID" else "先開始偵測或拉取群組管理員"
+                    result.append(("class:muted", f"     尚無符合項目；可手動輸入，或{hint}\n"))
                     row += 1
                 elif len(choices) > 6:
                     result.append(("class:muted", f"     共 {len(choices)} 個，↑↓ 瀏覽更多\n"))
