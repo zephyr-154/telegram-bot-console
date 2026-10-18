@@ -100,18 +100,21 @@ def test_full_uninstall_exits_shell_after_scheduling_but_cancel_returns_to_promp
 
 
 @pytest.mark.parametrize("keys", ["\x1b[B\r", "\t"])
-def test_enter_or_tab_fills_completion_before_executing(manager, keys):
+def test_enter_or_tab_fills_completion_before_executing(manager, keys, monkeypatch):
     screen = io.StringIO()
     output = Vt100_Output(screen, lambda: Size(rows=24, columns=100), term="xterm-256color", enable_cpr=False)
+    monkeypatch.setattr(output, "get_rows_below_cursor_position", lambda: 24)
     async def drive(pipe):
         session = shell.command_session(manager, input=pipe, output=output)
+        menu_drawn = asyncio.Event()
+        def after_render(app):
+            if "school" in screen.getvalue() and "work" in screen.getvalue():
+                menu_drawn.set()
+        session.app.after_render += after_render
         task = asyncio.create_task(session.prompt_async())
         try:
             pipe.send_text("tgbot start ")
-            for _ in range(100):
-                if session.default_buffer.complete_state:
-                    break
-                await asyncio.sleep(.01)
+            await asyncio.wait_for(menu_drawn.wait(), 2)
             assert [x.text for x in session.default_buffer.complete_state.completions] == ["school", "work"]
             pipe.send_text(keys)
             await asyncio.sleep(.1)
