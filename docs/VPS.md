@@ -31,7 +31,7 @@ sudo install -d -m 0700 -o telegrambot -g telegrambot /opt/telegram-anonymous-bo
 
 ```bash
 alias tgbot-vps='sudo -u telegrambot env TGBOT_HOME=/opt/telegram-anonymous-board/data/manager /opt/telegram-anonymous-board/.venv/bin/tgbot'
-tgbot-vps
+tgbot-vps config
 ```
 
 這個 alias 僅供目前終端使用。新增各台並填入 Token、群組／頻道 ID、管理員 ID，按 Ctrl+S 儲存。Ubuntu 安裝的 Noto CJK 字型會自動找到。

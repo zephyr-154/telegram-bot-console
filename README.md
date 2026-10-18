@@ -4,7 +4,7 @@
 
 **一個指令管理多台 Telegram 匿名投稿機器人。**
 
-方向鍵操作 · 繁中設定面板 · 背景執行 · 每台資料獨立
+指令即時提示 · 繁中設定面板 · 背景執行 · 每台資料獨立
 
 [![CI](https://github.com/zephyr-154/telegram-bot-console/actions/workflows/ci.yml/badge.svg)](https://github.com/zephyr-154/telegram-bot-console/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
@@ -17,13 +17,14 @@
 
 ![Telegram Bot Console 介面示意](docs/assets/console.svg)
 
-在同一台電腦或 VPS 部署多個機器人：輸入 `tgbot` 查看狀態，按 Enter 設定選中的機器人，再讓它在背景持續執行。投稿者私訊文字、確認發布後，機器人會產生繁中字卡，匿名發到指定群組、超級群組或頻道。
+在同一台電腦或 VPS 部署多個機器人：執行 `tgbot` 開啟有輸入框的指令介面，輸入 `tgbot start` 並加空格，就會即時列出機器人名稱。輸入 `tgbot config` 才開啟控制面板，再選擇機器人編輯設定。投稿者私訊文字、確認發布後，機器人會產生繁中字卡，匿名發到指定群組、超級群組或頻道。
 
 > **匿名範圍：** 貼文不顯示投稿者身分；系統仍保存 Telegram User ID，供原作者刪文、限流與管理員處理。請閱讀[資料與隱私](#資料與隱私)。上圖為操作示意，狀態與數字為範例。
 
 ## 有哪些功能
 
-- **多機器人控制台：** 狀態、PID、每台記憶體與主機記憶體使用率；支援新增、設定、啟停、重啟及刪除。
+- **互動指令介面：** `tgbot` 開啟輸入框，指令與名稱即時提示；↑↓ 選取、Tab／Enter 帶入，再按 Enter 執行。
+- **多機器人控制台：** `tgbot config` 查看狀態、PID、每台記憶體與主機記憶體使用率；支援新增、設定、啟停、重啟及刪除。
 - **鍵盤設定：** ↑↓ 選擇、Enter 編輯、Ctrl+S 儲存、Esc 返回；Token 隱藏輸入，各台自動產生獨立秘密金鑰。
 - **匿名投稿：** 純文字最多 4000 字，發布前二次確認；長文自動排版為最多 10 張 1080 × 1350 字卡。
 - **投稿管理：** 本人投稿分頁、刪文確認、檢舉、管理員封鎖、暫停投稿及待處理事項核對。
@@ -125,7 +126,7 @@ uv tool update-shell
 
 1. 在 Telegram 的 [@BotFather](https://t.me/BotFather) 建立 Bot，取得 **Bot Token**。
 2. 將 Bot 加入目標群組或頻道，授予傳送圖片、發文及刪除訊息所需權限。頻道需要管理員發文權限。
-3. 執行 `tgbot`，選擇「新增機器人」並輸入名稱，例如 `school`。
+3. 執行 `tgbot`，在輸入框輸入 `tgbot config` 開啟控制面板，再選擇「新增機器人」並輸入名稱，例如 `school`。
 4. 填寫 Token、目標群組／頻道 ID、管理員 Telegram User ID，確認字型路徑，按 **Ctrl+S 儲存**。
 5. 在面板啟動，或執行以下指令：
 
@@ -148,15 +149,27 @@ tgbot start
 
 ## 常用指令
 
+`tgbot` 開啟互動指令介面。可在輸入框輸入完整的 `tgbot start school`，也可簡寫成 `start school` 或 `/start school`。輸入 `help` 查看說明，`exit`、Ctrl+C 或 Ctrl+D 離開；背景機器人繼續執行。
+
+在互動輸入框中，輸入 `tgbot start` 後按空格，就會看到名稱與狀態，例如：
+
+```text
+tgbot Ready> tgbot start
+  school       機器人 · 已停止
+  work         機器人 · 執行中
+```
+
+輸入部分名稱可即時篩選；↑↓ 選取，Tab 或第一次 Enter 帶入，再按 Enter 執行。這些即時提示會顯示在 `tgbot` 互動介面內。外層 CMD、PowerShell 或 SSH 終端仍可直接執行下列單次指令。
+
 以下 `#` 後方是說明；CMD 使用者請只執行 `#` 前方的指令。
 
 ### 控制面板與設定
 
 ```bash
-tgbot                       # 打開多機器人控制面板
+tgbot                       # 打開互動指令介面
+tgbot config                # 開啟多機器人控制面板
 tgbot add school            # 新增並開啟設定
 tgbot config school         # 修改指定機器人
-tgbot config                # 從名稱選單選一台
 tgbot status                # 查看所有機器人狀態
 tgbot names                 # 只列出機器人名稱
 tgbot check                 # 檢查所有機器人的本機設定
@@ -175,7 +188,7 @@ tgbot restart               # 重啟全部機器人
 tgbot restart school        # 重啟指定機器人
 ```
 
-↑↓ 選擇、Enter 確認；`tgbot config sch` 可篩選名稱。沒有互動式終端時會使用編號選單。完整快捷鍵與程序行為請見[操作手冊](docs/MULTI_BOT_CLI.md)。
+`tgbot config sch` 可篩選名稱。設定面板按 Esc 返回上一層，離開控制面板後回到指令輸入框。沒有互動式終端時會使用文字輸入與編號選單。完整快捷鍵與程序行為請見[操作手冊](docs/MULTI_BOT_CLI.md)。
 
 ### 備份與還原
 

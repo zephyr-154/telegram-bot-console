@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
                 reconfigure(encoding="utf-8")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="舊版單機器人設定檔；多機器人請用 config 名稱")
-    parser = argparse.ArgumentParser(prog="tgbot", parents=[common], description="多機器人 CLI 控制面板；方向鍵選擇、Enter 操作")
+    parser = argparse.ArgumentParser(prog="tgbot", parents=[common], description="多機器人互動指令介面；config 開啟控制面板")
     parser.add_argument("--version", action="version", version=f"tgbot {__version__}")
     parser.add_argument("--install", action="store_true", help="原始碼版 Windows 指令捷徑")
     parser.add_argument("--check", action="store_true", help="檢查舊版單機器人設定")
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     add = commands.add_parser("add", help="新增機器人")
     add.add_argument("name", nargs="?")
     add.add_argument("--no-config", action="store_true", help="只建立設定草稿")
-    for command, help_text in [("config", "設定機器人"), ("check", "檢查機器人設定"), ("start", "背景啟動全部或指定機器人"),
+    for command, help_text in [("config", "開啟控制面板，或設定指定機器人"), ("check", "檢查機器人設定"), ("start", "背景啟動全部或指定機器人"),
                                ("stop", "停止全部或指定機器人"), ("restart", "重啟全部或指定機器人"), ("status", "查看運行狀態"),
                                ("backup", "備份指定機器人"), ("logs", "查看指定機器人日誌"), ("delete", "刪除指定機器人")]:
         sub = commands.add_parser(command, help=help_text, parents=[common])
@@ -142,6 +142,9 @@ def main(argv: list[str] | None = None) -> int:
         manager = BotManager()
 
         def action(command: str, name: str | None = None) -> None:
+            if command == "config" and name is None:
+                dashboard(manager, action)
+                return
             if command == "add":
                 name = name or name_prompt(manager)
                 manager.create(name)
@@ -207,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{selected}：{LABELS.get(state['status'], state['status'])}，PID {state['pid'] or '—'}，{state['memory_mb']:.1f} MB")
 
         if args.command is None:
-            dashboard(manager, action)
+            from app.shell import command_shell
+            command_shell(manager, main)
         elif args.command == "app":
             if _confirm("將停止所有機器人，永久移除全部設定、資料庫、備份及 tgbot 安裝套件。", "DELETE ALL", args.yes):
                 from app.uninstall import schedule_uninstall

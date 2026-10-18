@@ -84,7 +84,8 @@ def main():
             wait_for(lambda: all(manager.status(name)["status"] == "running" for name in manager.names()))
             assert "執行中" in command("status")
             second_pid = manager.process("second").pid
-            command(input="0\n")
+            shell_output = command(input="tgbot status\ntgbot names\nhelp\nexit\n")
+            assert "first" in shell_output and "second" in shell_output and "Ready>" in shell_output
             assert manager.process("second").pid == second_pid
             command("stop", "first")
             assert manager.process("first") is None and manager.process("second") is not None

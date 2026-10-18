@@ -1,13 +1,25 @@
 # 多機器人 CLI
 
-輸入 `tgbot` 開啟深色控制面板。首頁列出所有機器人的狀態、PID、記憶體與主機記憶體使用率，每秒更新。上下方向鍵選取，Enter 直接進入該台設定；Esc 或 q 離開首頁，背景程序繼續執行。
+輸入 `tgbot` 先開啟互動指令介面，包含啟動畫面與 `tgbot Ready>` 輸入框。在這個輸入框輸入 `tgbot config`，才會開啟深色控制面板。面板首頁列出所有機器人的狀態、PID、記憶體與主機記憶體使用率，每秒更新。上下方向鍵選取，Enter 直接進入該台設定；Esc 或 q 離開面板後回到指令輸入框，背景程序繼續執行。
 
 設定畫面使用分區標題、左側欄位與右側值。Enter 編輯選取的欄位，再按 Enter 套用；Ctrl+S 驗證並儲存；Esc 取消編輯，或放棄尚未儲存的修改並返回。Token 全程遮蔽，編輯時留空會保留原值。下方提供背景啟動、停止、重啟、備份、日誌與刪除。
+
+## 互動指令與即時名稱提示
+
+在 `tgbot Ready>` 後輸入 `tgbot start`，再加一個空格，下方就會列出現有機器人名稱與狀態，不必先按 Tab。繼續輸入名稱會即時篩選；↑↓ 選取，Tab 或第一次 Enter 帶入，再按 Enter 執行。`stop`、`restart`、`config`、`status`、`logs`、`check`、`backup`、`restore`、`delete` 也有名稱提示。
+
+可使用完整指令 `tgbot start school`，或簡寫成 `start school`、`/start school`。輸入 `tgbot` 後加空格或輸入 `/` 可查看指令提示。`help` 顯示說明，↑↓ 可在沒有提示選單時瀏覽本次工作階段的歷史。歷史只存於記憶體，不寫入磁碟；Token 請在設定面板中輸入。
+
+`exit`、Ctrl+C、Ctrl+D 離開互動介面，背景機器人繼續執行。`--help`、錯誤指令及面板關閉後會返回輸入框。若在介面中確認 `tgbot app delete`，介面會結束，讓解除安裝程序完成。需要含空格的備份路徑時，使用雙引號，例如 `tgbot restore school "C:\my backups\snapshot.sqlite3"`。
+
+這些即時提示屬於 `tgbot` 的互動輸入框；外層 CMD、PowerShell、bash 仍可直接執行一次性的 `tgbot start school` 等指令。非互動終端改用普通文字輸入，控制面板使用編號選單。
 
 ## 指令
 
 - `tgbot add school`：新增並設定 school；省略名稱會詢問，`--no-config` 只建立草稿。
-- `tgbot config school`：設定指定機器人；省略名稱會出現選單。
+- `tgbot`：開啟互動指令介面。
+- `tgbot config`：開啟多機器人控制面板。
+- `tgbot config school`：直接設定指定機器人。
 - `tgbot start`：背景啟動全部。
 - `tgbot start school`：背景啟動指定機器人。
 - `tgbot stop`：停止全部。
