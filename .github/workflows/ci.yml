@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python 3.12 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+          activate-environment: true
+          enable-cache: true
+      - name: Install Linux fonts
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
+      - name: Install macOS fonts
+        if: runner.os == 'macOS'
+        run: brew install --cask font-noto-sans-cjk-tc
+      - name: Install project and test dependencies
+        run: uv pip install -e ".[test]"
+      - name: Test
+        run: python -m pytest -q
+      - name: Build wheel and source archive
+        run: uv build
+      - name: Test isolated CLI installation and background workers
+        run: python tests/package_smoke.py

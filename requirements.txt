@@ -1,0 +1,5 @@
+aiogram>=3.13,<4
+Pillow>=10.0,<13
+tzdata>=2024.1
+prompt_toolkit>=3.0.52,<4
+psutil>=6,<8

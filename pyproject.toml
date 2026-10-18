@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-anonymous-board"
+description = "Telegram anonymous submission bot with an interactive CLI"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["telegram", "bot", "anonymous", "cli", "multi-bot"]
+dynamic = ["version", "dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/zephyr-154/telegram-bot-console"
+Documentation = "https://github.com/zephyr-154/telegram-bot-console#readme"
+Issues = "https://github.com/zephyr-154/telegram-bot-console/issues"
+
+[project.scripts]
+tgbot = "app.cli:main"
+
+[project.optional-dependencies]
+test = ["pytest>=8.0,<9"]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.dynamic]
+version = {attr = "app.__version__"}
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = ["app", "app.*"]

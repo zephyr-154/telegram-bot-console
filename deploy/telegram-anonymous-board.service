@@ -1,0 +1,23 @@
+[Unit]
+Description=新工爆言版 Telegram 匿名投稿機器人
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=telegrambot
+Group=telegrambot
+UMask=0077
+WorkingDirectory=/opt/telegram-anonymous-board
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/telegram-anonymous-board/.venv/bin/python -m app.main
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/telegram-anonymous-board/data
+
+[Install]
+WantedBy=multi-user.target

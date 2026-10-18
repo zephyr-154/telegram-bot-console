@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Telegram board backup at 03:10 Asia/Taipei
+
+[Timer]
+OnCalendar=*-*-* 03:10:00 Asia/Taipei
+Persistent=true
+Unit=telegram-anonymous-board-backup.service
+
+[Install]
+WantedBy=timers.target

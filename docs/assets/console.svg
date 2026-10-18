@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="410" viewBox="0 0 1120 410" role="img" aria-labelledby="title desc">
+  <title id="title">Telegram Bot Console</title>
+  <desc id="desc">Terminal interface illustration with two bots and a settings panel. All values are examples.</desc>
+  <rect width="1120" height="410" rx="16" fill="#0d0d0d"/>
+  <rect x="1" y="1" width="1118" height="408" rx="15" fill="none" stroke="#333333"/>
+  <path d="M0 46h1120" stroke="#333333"/>
+  <circle cx="24" cy="23" r="5" fill="#e16d68"/><circle cx="43" cy="23" r="5" fill="#dfb25b"/><circle cx="62" cy="23" r="5" fill="#70b884"/>
+  <g font-family="Consolas, 'SFMono-Regular', 'Noto Sans CJK TC', 'Microsoft JhengHei', monospace" font-size="16">
+    <text x="91" y="29" fill="#b5b5b5">tgbot · Telegram Bot Console</text>
+    <text x="30" y="85" fill="#f5a66b" font-size="20" font-weight="bold">Bot Console</text>
+    <text x="30" y="116" fill="#888888">2 bots · host memory 24%</text>
+    <text x="48" y="164" fill="#888888">NAME</text><text x="239" y="164" fill="#888888">STATUS</text><text x="408" y="164" fill="#888888">MEMORY</text>
+    <rect x="22" y="179" width="502" height="40" rx="4" fill="#392a21"/>
+    <text x="30" y="205" fill="#f5a66b">›</text><text x="48" y="205" fill="#eeeeee">school</text><text x="239" y="205" fill="#87c998">● running</text><text x="408" y="205" fill="#eeeeee">76.2 MB</text>
+    <text x="48" y="252" fill="#eeeeee">work</text><text x="239" y="252" fill="#aaaaaa">○ stopped</text><text x="408" y="252" fill="#aaaaaa">—</text>
+    <text x="48" y="305" fill="#f5a66b">+ Add bot</text><text x="239" y="305" fill="#b5b5b5">Start all</text><text x="408" y="305" fill="#b5b5b5">Stop all</text>
+    <path d="M552 68v262" stroke="#333333"/>
+    <text x="580" y="85" fill="#f5a66b" font-size="20" font-weight="bold">school / settings</text>
+    <text x="580" y="127" fill="#888888">TELEGRAM</text>
+    <text x="596" y="164" fill="#eeeeee">Bot Token</text><text x="829" y="164" fill="#b5b5b5">••••••••••••</text>
+    <rect x="572" y="179" width="520" height="40" rx="4" fill="#392a21"/>
+    <text x="580" y="205" fill="#f5a66b">›</text><text x="596" y="205" fill="#eeeeee">Channel ID</text><text x="829" y="205" fill="#eeeeee">-1001234567890</text>
+    <text x="596" y="252" fill="#eeeeee">Admin User ID</text><text x="829" y="252" fill="#eeeeee">123456789</text>
+    <text x="580" y="296" fill="#888888">ACTIONS</text><text x="596" y="325" fill="#f5a66b">Start · Stop · Restart</text>
+    <path d="M24 351h1072" stroke="#333333"/>
+    <text x="30" y="383" fill="#999999">↑↓ Move   Enter Edit   Ctrl+S Save   Esc Back</text>
+    <text x="985" y="383" fill="#666666" font-size="12">UI illustration</text>
+  </g>
+</svg>

@@ -1,0 +1,27 @@
+[Unit]
+Description=Telegram multi-bot manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=telegrambot
+Group=telegrambot
+UMask=0077
+WorkingDirectory=/opt/telegram-anonymous-board
+Environment=PYTHONUTF8=1
+Environment=TGBOT_HOME=/opt/telegram-anonymous-board/data/manager
+# Keep valid workers when another bot's configuration is incomplete.
+ExecStart=-/opt/telegram-anonymous-board/.venv/bin/python -m app.cli start
+ExecStop=/opt/telegram-anonymous-board/.venv/bin/python -m app.cli stop
+TimeoutStopSec=45
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/telegram-anonymous-board/data
+
+[Install]
+WantedBy=multi-user.target

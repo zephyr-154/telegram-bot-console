@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+import logging
+from datetime import timedelta, timezone
+
+from aiogram import Bot
+
+from app.context import AppContext
+from app.utils import article_status_text, iso_utc, message_link, taipei_now
+
+logger = logging.getLogger(__name__)
+
+
+async def admin_stats(ctx: AppContext) -> tuple[int, int]:
+    now = taipei_now(ctx.settings.timezone)
+    now_utc = now.astimezone(timezone.utc)
+    query_end = now_utc + timedelta(seconds=1)
+    local_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_utc = local_start.astimezone(timezone.utc)
+    total = await ctx.db.count_published_between(
+        "0001-01-01T00:00:00+00:00",
+        iso_utc(query_end),
+    )
+    today = await ctx.db.count_published_between(
+        iso_utc(start_utc),
+        iso_utc(query_end),
+    )
+    return today, total
+
+
+async def notify_admin(ctx: AppContext, bot: Bot, text: str) -> None:
+    try:
+        await bot.send_message(chat_id=ctx.settings.admin_user_id, text=text)
+    except Exception as exc:
+        logger.warning("admin notification failed error=%s", type(exc).__name__)
+
+
+def format_article(article: dict, messages: list[dict], timezone_name: str) -> str:
+    ids = ", ".join(str(row["message_id"]) for row in messages) or "未取得"
+    link = message_link(messages[0]["channel_id"], messages[0]["message_id"]) if messages else None
+    return (
+        f"文章：#{article['article_id']}\n"
+        f"狀態：{article_status_text(article, timezone_name)}\n"
+        f"原投稿者 Telegram User ID：{article['author_user_id']}\n"
+        f"發布時間 UTC：{article.get('published_at_utc') or '尚未確認'}\n"
+        f"群組／頻道 message ID：{ids}\n"
+        f"需要人工核對：{'是' if article.get('publish_error_code') or article.get('delete_error_code') else '否'}"
+        + (f"\n貼文：{link}" if link else "")
+    )

@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram anonymous board SQLite backup
+
+[Service]
+Type=oneshot
+User=telegrambot
+Group=telegrambot
+UMask=0077
+WorkingDirectory=/opt/telegram-anonymous-board
+ExecStart=/opt/telegram-anonymous-board/.venv/bin/python -m app.backup create
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/telegram-anonymous-board/data
