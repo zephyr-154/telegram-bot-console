@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.base import BaseSession
-from aiogram.types import CallbackQuery, Chat, Message, Update, User
+from aiogram.types import CallbackQuery, Chat, ChatFullInfo, Message, Update, User
 
 from app.config import Settings
 from app.chat_discovery import ChatRegistry, ChatTrackingMiddleware
@@ -35,8 +35,15 @@ class ReplaySession(BaseSession):
     async def make_request(self, bot, method, timeout=None):
         name = type(method).__name__
         self.calls.append(method)
-        if name in {"AnswerCallbackQuery", "DeleteMessage"}:
+        if name in {"AnswerCallbackQuery", "DeleteMessage", "PinChatMessage"}:
             return True
+        if name == "GetChat":
+            return ChatFullInfo(
+                id=int(method.chat_id), type="supergroup", title="測試群組", accent_color_id=0, max_reaction_count=0,
+                accepted_gift_types={name: False for name in (
+                    "unlimited_gifts", "limited_gifts", "unique_gifts", "premium_subscription", "gifts_from_channels",
+                )},
+            )
         assert name in {"SendMessage", "EditMessageText", "SendPhoto"}, name
         self.serial += 1
         return Message(
@@ -85,7 +92,7 @@ async def routing_smoke():
                 await incoming(command)
                 assert await db.get_pending_for_user(42) is None
             before = len(session.calls)
-            await incoming("/hhvszephyr")
+            await incoming("/admin")
             await incoming("群組內的文字不應成為投稿", chat_id=-1001234)
             assert len(session.calls) == before
             assert [chat["id"] for chat in registry.chats()] == [-1001234]
@@ -98,11 +105,27 @@ async def routing_smoke():
             assert await db.get_pending_for_user(42) is None
             assert len([call for call in session.calls if type(call).__name__ == "SendPhoto"]) == 1
             assert len(await db.list_user_articles(42, 10, 0)) == 1
-            await incoming("/hhvszephyr", actor=99)
+            await incoming("/admin", actor=99)
             panel_id = (await db.get_state(99))["payload"]["panel_message_id"]
             await click("admin:pause", 99, panel_id)
             await click("admin:set_pause:1", 99, panel_id)
             assert await db.submissions_paused()
+            await click("admin:speak", 99, panel_id)
+            await click("admin:speak_to:-1001234", 99, panel_id)
+            await incoming("delete", actor=99)
+            speech = await db.get_state(99)
+            assert speech["state"] == "admin_speech_confirm"
+            assert await db.get_pending_for_user(99) is None
+            confirmation = "admin:speak_send:1:" + speech["payload"]["nonce"]
+            await click(confirmation, 99, panel_id)
+            await click(confirmation, 99, panel_id)
+            sent = [call for call in session.calls if type(call).__name__ == "SendMessage" and call.chat_id == -1001234]
+            assert len(sent) == 1 and sent[0].text == "delete" and sent[0].parse_mode is None
+            assert len([call for call in session.calls if type(call).__name__ == "PinChatMessage"]) == 1
+            await click("admin:speak", 99, panel_id)
+            await click("admin:speak_to:all", 99, panel_id)
+            await incoming("/cancel", actor=99)
+            assert await db.get_state(99) is None
         finally:
             await db.close()
             await bot.session.close()

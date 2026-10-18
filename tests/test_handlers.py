@@ -46,7 +46,7 @@ def test_platform_preview_length_rejection_keeps_confirmable_draft(ctx, bot, mon
 def test_private_admin_command_stays_silent_even_while_busy(ctx, bot):
     async def scenario():
         async with ctx.user_locks[42]:
-            await private_text(bot.message(text=" /HHVSZEPHYR "), bot, ctx)
+            await private_text(bot.message(text=" /ADMIN "), bot, ctx)
         assert not bot.messages and not await ctx.db.get_pending_for_user(42)
     asyncio.run(scenario())
 

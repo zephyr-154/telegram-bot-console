@@ -45,7 +45,7 @@ def test_csv_ids_preserve_single_value_compatibility_and_deduplicate(tmp_path):
 def test_each_admin_has_an_independent_panel_and_unlisted_users_stay_unauthorized(multi, bot):
     async def scenario():
         for user_id in (99, 100):
-            await admin_command(bot.message(user_id=user_id, text="/hhvszephyr"), bot, multi)
+            await admin_command(bot.message(user_id=user_id, text="/admin"), bot, multi)
         states = {user_id: await multi.db.get_state(user_id) for user_id in (99, 100)}
         panels = {user_id: states[user_id]["payload"]["panel_message_id"] for user_id in states}
         assert panels[99] != panels[100]
@@ -53,7 +53,7 @@ def test_each_admin_has_an_independent_panel_and_unlisted_users_stay_unauthorize
         await admin_callback(FakeCallback(bot, "admin:set_pause:1", user_id=100, message_id=panels[100]), bot, multi)
         assert await multi.db.submissions_paused()
         before = len(bot.messages), len(bot.edits)
-        await admin_command(bot.message(user_id=101, text="/hhvszephyr"), bot, multi)
+        await admin_command(bot.message(user_id=101, text="/admin"), bot, multi)
         await admin_callback(FakeCallback(bot, "admin:stats", user_id=101, message_id=panels[99]), bot, multi)
         cross_panel = FakeCallback(bot, "admin:stats", user_id=100, message_id=panels[99])
         cross_panel.message.chat.id = 99

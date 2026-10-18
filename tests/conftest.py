@@ -36,6 +36,7 @@ class FakeBot:
         self.photo_calls = []
         self.media_calls = []
         self.deleted = []
+        self.pinned = []
 
     def message(self, user_id=42, text="", message_id=1):
         return FakeMessage(self, user_id, text, message_id)
@@ -65,6 +66,13 @@ class FakeBot:
 
     async def delete_message(self, **kwargs):
         self.deleted.append(kwargs)
+
+    async def get_chat(self, chat_id, **kwargs):
+        return SimpleNamespace(id=chat_id, title=f"測試群組 {chat_id}")
+
+    async def pin_chat_message(self, **kwargs):
+        self.pinned.append(kwargs)
+        return True
 
 
 class FakeCallback:

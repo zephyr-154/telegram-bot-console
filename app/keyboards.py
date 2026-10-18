@@ -43,6 +43,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="解除封鎖", callback_data="admin:unblock"),
             ],
             [InlineKeyboardButton(text="封鎖名單", callback_data="admin:list")],
+            [InlineKeyboardButton(text="直接發話／公告", callback_data="admin:speak")],
             [
                 InlineKeyboardButton(text="待處理事項", callback_data="admin:pending"),
                 InlineKeyboardButton(text="暫停／恢復投稿", callback_data="admin:pause"),
@@ -58,6 +59,15 @@ def admin_back_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="返回管理面板", callback_data="admin:back")]
         ]
     )
+
+
+def admin_speech_keyboard(nonce: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="發送（不置頂）", callback_data=f"admin:speak_send:0:{nonce}"),
+         InlineKeyboardButton(text="發送並置頂", callback_data=f"admin:speak_send:1:{nonce}")],
+        [InlineKeyboardButton(text="重新輸入內容", callback_data=f"admin:speak_edit:{nonce}")],
+        [InlineKeyboardButton(text="取消／返回管理面板", callback_data="admin:back")],
+    ])
 
 
 def admin_article_keyboard(article_id: str, needs_review: bool = False) -> InlineKeyboardMarkup:

@@ -16,6 +16,7 @@ from app.keyboards import (
     admin_article_keyboard,
     admin_back_keyboard,
     admin_keyboard,
+    admin_speech_keyboard,
     delete_keyboard,
     home_keyboard,
     submission_keyboard,
@@ -91,7 +92,7 @@ async def clear_user_operation(message: Message, bot: Bot, ctx: AppContext, user
     await _clear_pending_messages(ctx, bot, user_id, message.chat.id)
 
 
-@router.message(Command("hhvszephyr"), F.chat.type == ChatType.PRIVATE)
+@router.message(Command("admin"), F.chat.type == ChatType.PRIVATE)
 async def admin_command(message: Message, bot: Bot, ctx: AppContext) -> None:
     if message.from_user.id not in ctx.settings.admin_user_ids:
         return
@@ -116,10 +117,15 @@ async def private_text(message: Message, bot: Bot, ctx: AppContext) -> None:
     text = message.text or ""
     stripped_text = text.strip()
     command_head = stripped_text.split(maxsplit=1)[0] if stripped_text else ""
-    if command_head.casefold().split("@", 1)[0] == "/hhvszephyr":
+    if command_head.casefold().split("@", 1)[0] == "/admin":
         return
     if ctx.user_locks[user_id].locked():
         await message.answer("上一份投稿或操作正在處理，請完成後再傳送。")
+        return
+
+    state = await ctx.db.get_state(user_id)
+    if state and state["state"] == "admin_wait_speech" and user_id in ctx.settings.admin_user_ids:
+        await _handle_admin_text(message, bot, ctx, state)
         return
 
     if text.strip().casefold() == "delete":
@@ -332,6 +338,29 @@ async def _handle_admin_text(
             )
         except (TypeError, ValueError):
             current_panel_id = panel_id
+
+        if state["state"] == "admin_wait_speech":
+            text = (message.text or "").strip()
+            if not text or len(text.encode("utf-16-le")) // 2 > 4096:
+                await message.answer("發話內容需為 1 至 4096 字元，表情符號可能占兩個字元。請重新輸入，或用 /cancel 取消。")
+                return
+            targets = current_state["payload"].get("target_chat_ids", [])
+            if not targets or any(target not in ctx.settings.channel_ids for target in targets):
+                await update_admin_panel(
+                    bot, ctx, user_id=user_id, chat_id=message.chat.id, current_panel_id=current_panel_id,
+                    text="目標設定已變更，請重新選擇直接發話。", reply_markup=admin_keyboard(),
+                )
+                return
+            nonce = secrets.token_urlsafe(12)
+            target_text = str(targets[0]) if len(targets) == 1 else f"全部 {len(targets)} 個已選群組／頻道"
+            preview = text[:1500] + ("\n…（完整內容以你傳送的原文為準）" if len(text) > 1500 else "")
+            await update_admin_panel(
+                bot, ctx, user_id=user_id, chat_id=message.chat.id, current_panel_id=current_panel_id,
+                text=f"直接發話預覽\n目標：{target_text}\n\n{preview}\n\n請選擇發送方式。",
+                reply_markup=admin_speech_keyboard(nonce), state_name="admin_speech_confirm",
+                state_payload={"target_chat_ids": targets, "text": text, "nonce": nonce},
+            )
+            return
 
         if state["state"] == "admin_wait_article":
             article_id = normalize_article_id(message.text or "")
