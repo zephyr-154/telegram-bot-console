@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import asyncio
 
 import pytest
 from prompt_toolkit.data_structures import Size
@@ -12,6 +13,8 @@ from app.manager import BotManager
 from app.settings_editor import initial_values, save_config
 from app.config import read_dotenv
 from app.terminal import select, settings_panel, text_row
+from app.chat_discovery import ChatRegistry
+from aiogram.types import Chat
 
 
 @pytest.fixture
@@ -43,7 +46,7 @@ def test_settings_enter_edits_selected_value_and_ctrl_s_saves(profile):
     manager, folder, values = profile
     original = (folder / ".env").read_bytes()
     with create_pipe_input() as pipe:
-        pipe.send_text("\x1b[B\x1b[B\r\x01\x0b84\r\x13\x1b")
+        pipe.send_text("\x1b[B" * 3 + "\r\x01\x0b84\r\x13\x1b")
         settings_panel(manager, "school", input=pipe, output=DummyOutput())
     saved = read_dotenv(folder / ".env")
     assert saved["ADMIN_USER_ID"] == "84"
@@ -55,7 +58,7 @@ def test_settings_escape_discards_unsaved_changes(profile):
     manager, folder, _ = profile
     original = (folder / ".env").read_bytes()
     with create_pipe_input() as pipe:
-        pipe.send_text("\x1b[B\x1b[B\r\x01\x0b84\r\x1b")
+        pipe.send_text("\x1b[B" * 3 + "\r\x01\x0b84\r\x1b")
         settings_panel(manager, "school", input=pipe, output=DummyOutput())
     assert (folder / ".env").read_bytes() == original
 
@@ -74,12 +77,91 @@ def test_settings_never_renders_existing_token(profile):
 def test_profile_actions_are_reachable_with_arrow_keys(profile):
     manager, _, _ = profile
     with create_pipe_input() as pipe:
-        pipe.send_text("\x1b[B" * 7 + "\r")
+        pipe.send_text("\x1b[B" * 8 + "\r")
         assert settings_panel(manager, "school", input=pipe, output=DummyOutput()) == "start"
 
 
 def test_chinese_labels_align_using_display_width():
     assert text_row("管理員", "42", 12) == "管理員" + " " * 6 + "42"
+
+
+@pytest.mark.parametrize("keys,expected", [
+    ("\x1b[B\r", "-1009"),
+    ("\x01\x0b-100777\r", "-100777"),
+    ("\x01\x0b社群\x1b[B\r", "-1008"),
+    ("\x01\x0b1008\x1b[B\r", "-1008"),
+    ("\x1b[B\x13", "-1009"),
+])
+def test_target_can_be_selected_searched_or_entered_manually(profile, keys, expected):
+    manager, folder, values = profile
+    registry = ChatRegistry(folder, values["BOT_TOKEN"])
+    registry.remember(Chat(id=-1009, title="Campus 頻道", type="channel"))
+    registry.remember(Chat(id=-1008, title="學校社群", type="supergroup"))
+    with create_pipe_input() as pipe:
+        pipe.send_text("\x1b[B" * 2 + "\r" + keys + "\x13\x1b")
+        settings_panel(manager, "school", input=pipe, output=DummyOutput())
+    assert read_dotenv(folder / ".env")["CHANNEL_ID"] == expected
+
+
+def test_discovery_can_start_with_only_unsaved_token_and_closes_on_escape(tmp_path, monkeypatch):
+    import app.terminal as terminal
+    manager = BotManager(tmp_path / "managed")
+    folder = manager.create("new")
+    original = (folder / ".env").read_bytes()
+    calls, closed = [], []
+    with create_pipe_input() as pipe:
+        async def watch(manager_arg, name, token, channel_id):
+            calls.append((name, token, channel_id))
+            try:
+                yield [], "等待邀請機器人"
+                pipe.send_text("\x1b")
+                await asyncio.Event().wait()
+            finally:
+                closed.append(True)
+        monkeypatch.setattr(terminal, "watch_chats", watch)
+        pipe.send_text("\r9988776655:offline_token\r\x1b[B\r")
+        settings_panel(manager, "new", input=pipe, output=DummyOutput())
+    assert calls == [("new", "9988776655:offline_token", "")]
+    assert closed == [True]
+    assert (folder / ".env").read_bytes() == original
+
+
+def test_unsaved_token_and_live_result_can_be_selected_then_saved(profile, monkeypatch):
+    import app.terminal as terminal
+    manager, folder, values = profile
+    new_token = "8877665544:unsaved_offline_token"
+    closed = []
+    with create_pipe_input() as pipe:
+        async def watch(manager_arg, name, token, channel_id):
+            assert token == new_token
+            assert read_dotenv(folder / ".env")["BOT_TOKEN"] == values["BOT_TOKEN"]
+            try:
+                yield [{"id": -10099, "title": "即時新群組", "type": "supergroup"}], "等待邀請"
+                pipe.send_text("\x1b[B\r\x1b[B\r\x13\x1b")
+                await asyncio.Event().wait()
+            finally:
+                closed.append(True)
+        monkeypatch.setattr(terminal, "watch_chats", watch)
+        pipe.send_text("\r" + new_token + "\r\x1b[B\r")
+        settings_panel(manager, "school", input=pipe, output=DummyOutput())
+    saved = read_dotenv(folder / ".env")
+    assert saved["BOT_TOKEN"] == new_token and saved["CHANNEL_ID"] == "-10099"
+    assert saved["CONTENT_HASH_SECRET"] == values["CONTENT_HASH_SECRET"] and closed == [True]
+
+
+def test_discovery_error_keeps_manual_target_input_available(profile, monkeypatch):
+    import app.terminal as terminal
+    from app.config import ConfigurationError
+    manager, folder, _ = profile
+    with create_pipe_input() as pipe:
+        async def watch(*args):
+            pipe.send_text("\x1b[B\r\x01\x0b-10055\r\x13\x1b")
+            raise ConfigurationError("無法連線到 Telegram")
+            yield
+        monkeypatch.setattr(terminal, "watch_chats", watch)
+        pipe.send_text("\x1b[B\r")
+        settings_panel(manager, "school", input=pipe, output=DummyOutput())
+    assert read_dotenv(folder / ".env")["CHANNEL_ID"] == "-10055"
 
 
 def test_long_chinese_bot_name_does_not_hide_status_column():

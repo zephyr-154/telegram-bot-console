@@ -11,7 +11,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 
 from app.backup import database_lock
-from app.config import ConfigurationError, load_settings
+from app.config import ConfigurationError, default_env_path, load_settings
+from app.chat_discovery import ChatRegistry, ChatTrackingMiddleware, DISCOVERY_UPDATES
 from app.context import AppContext
 from app.database import Database
 from app.handlers import admin, private, user
@@ -97,13 +98,15 @@ async def run(env_path: str | Path | None = None, *, ready_callback: Callable[[]
                     BotCommand(command="help", description="操作說明"),
                 ])
                 dispatcher = Dispatcher(ctx=ctx)
+                registry = ChatRegistry(Path(env_path or default_env_path()).expanduser().resolve().parent, settings.bot_token)
+                dispatcher.update.outer_middleware(ChatTrackingMiddleware(registry))
                 dispatcher.include_router(user.router)
                 dispatcher.include_router(private.router)
                 dispatcher.include_router(admin.router)
                 maintenance = asyncio.create_task(_maintenance(ctx, bot))
                 if ready_callback is not None:
                     ready_callback()
-                await dispatcher.start_polling(bot)
+                await dispatcher.start_polling(bot, allowed_updates=sorted(set(dispatcher.resolve_used_update_types()) | DISCOVERY_UPDATES))
             finally:
                 if maintenance:
                     maintenance.cancel()

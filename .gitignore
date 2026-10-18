@@ -18,6 +18,8 @@ data/
 *.sqlite3-*
 logs/
 *.log
+chats-*.json*
+.codex-remote-attachments/
 .coverage*
 htmlcov/
 .DS_Store

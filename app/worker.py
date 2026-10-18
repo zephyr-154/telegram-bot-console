@@ -53,6 +53,7 @@ async def serve(manager: BotManager, name: str, nonce: str) -> None:
     root_logger.handlers = [handler]
     root_logger.setLevel(logging.INFO)
     state["bot_id"] = values.get("BOT_TOKEN", "").split(":", 1)[0]
+    state["chat_tracking"] = True
     write_json(state_path, state)
 
     def ready() -> None:

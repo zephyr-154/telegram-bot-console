@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="410" viewBox="0 0 1120 410" role="img" aria-labelledby="title desc">
   <title id="title">Telegram Bot Console</title>
-  <desc id="desc">Interactive command input with live bot name suggestions, and the control panel opened by tgbot config. All values are examples.</desc>
+  <desc id="desc">Interactive command input with live bot name suggestions, and the settings panel detecting joined Telegram groups and channels. All values are examples.</desc>
   <rect width="1120" height="410" rx="16" fill="#0d0d0d"/>
   <rect x="1" y="1" width="1118" height="408" rx="15" fill="none" stroke="#333333"/>
   <path d="M0 46h1120" stroke="#333333"/>
@@ -18,12 +18,14 @@
     <text x="30" y="326" fill="#999999" font-size="13">↑↓ Select · Tab / Enter Insert · Enter Run</text>
     <path d="M552 68v262" stroke="#333333"/>
     <text x="580" y="85" fill="#f5a66b" font-size="20" font-weight="bold">tgbot config → settings</text>
-    <text x="580" y="127" fill="#888888">TELEGRAM</text>
-    <text x="596" y="164" fill="#eeeeee">Bot Token</text><text x="829" y="164" fill="#b5b5b5">••••••••••••</text>
-    <rect x="572" y="179" width="520" height="40" rx="4" fill="#392a21"/>
-    <text x="580" y="205" fill="#f5a66b">›</text><text x="596" y="205" fill="#eeeeee">Channel ID</text><text x="829" y="205" fill="#eeeeee">-1001234567890</text>
-    <text x="596" y="252" fill="#eeeeee">Admin User ID</text><text x="829" y="252" fill="#eeeeee">123456789</text>
-    <text x="580" y="296" fill="#888888">ACTIONS</text><text x="596" y="325" fill="#f5a66b">Start · Stop · Restart</text>
+    <text x="580" y="123" fill="#888888">TOKEN → INVITE → SELECT</text>
+    <text x="596" y="158" fill="#eeeeee">Bot Token</text><text x="829" y="158" fill="#b5b5b5">••••••••••••</text>
+    <text x="596" y="190" fill="#eeeeee">Discover chats</text><text x="829" y="190" fill="#87c998">Listening · 2 found</text>
+    <text x="596" y="222" fill="#eeeeee">Channel ID</text><text x="829" y="222" fill="#888888">type ID / search</text>
+    <rect x="605" y="236" width="487" height="34" rx="4" fill="#392a21"/>
+    <text x="614" y="259" fill="#f5a66b">›</text><text x="634" y="259" fill="#eeeeee">HHVS 頻道</text><text x="829" y="259" fill="#eeeeee">-1001234567890</text>
+    <text x="634" y="291" fill="#aaaaaa">學校社群</text><text x="829" y="291" fill="#aaaaaa">-1009876543210</text>
+    <text x="580" y="326" fill="#999999" font-size="13">↑↓ Select chat · Enter Fill · Ctrl+S Save</text>
     <path d="M24 351h1072" stroke="#333333"/>
     <text x="30" y="383" fill="#999999">config → Control panel · Esc → Command console · exit → Quit</text>
     <text x="985" y="383" fill="#666666" font-size="12">UI illustration</text>

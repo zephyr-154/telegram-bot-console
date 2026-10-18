@@ -12,6 +12,7 @@ from aiogram.client.session.base import BaseSession
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
 from app.config import Settings
+from app.chat_discovery import ChatRegistry, ChatTrackingMiddleware
 from app.context import AppContext
 from app.database import Database
 from app.handlers import admin, private, user
@@ -56,6 +57,8 @@ async def routing_smoke():
         settings = Settings("1234567890:test", -1001234, 99, db.path, root / "tmp", root / "font", root / "bold", None, "s" * 32)
         ctx = AppContext(settings, db)
         dispatcher = Dispatcher(ctx=ctx)
+        registry = ChatRegistry(root, settings.bot_token)
+        dispatcher.update.outer_middleware(ChatTrackingMiddleware(registry))
         dispatcher.include_routers(user.router, private.router, admin.router)
         update_id = 0
 
@@ -85,6 +88,8 @@ async def routing_smoke():
             await incoming("/hhvszephyr")
             await incoming("群組內的文字不應成為投稿", chat_id=-1001234)
             assert len(session.calls) == before
+            assert [chat["id"] for chat in registry.chats()] == [-1001234]
+            assert "群組內的文字" not in registry.path.read_text(encoding="utf-8")
             with patch("app.services.publishing.render_post_images", return_value=[b"png"]):
                 await incoming("正常投稿內容")
                 pending = await db.get_pending_for_user(42)

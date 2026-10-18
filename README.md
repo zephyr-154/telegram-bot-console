@@ -4,7 +4,7 @@
 
 **一個指令管理多台 Telegram 匿名投稿機器人。**
 
-指令即時提示 · 繁中設定面板 · 背景執行 · 每台資料獨立
+指令即時提示 · 邀入群組自動登記 · 繁中設定面板 · 每台資料獨立
 
 [![CI](https://github.com/zephyr-154/telegram-bot-console/actions/workflows/ci.yml/badge.svg)](https://github.com/zephyr-154/telegram-bot-console/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
@@ -26,6 +26,7 @@
 - **互動指令介面：** `tgbot` 開啟輸入框，指令與名稱即時提示；↑↓ 選取、Tab／Enter 帶入，再按 Enter 執行。
 - **多機器人控制台：** `tgbot config` 查看狀態、PID、每台記憶體與主機記憶體使用率；支援新增、設定、啟停、重啟及刪除。
 - **鍵盤設定：** ↑↓ 選擇、Enter 編輯、Ctrl+S 儲存、Esc 返回；Token 隱藏輸入，各台自動產生獨立秘密金鑰。
+- **群組／頻道偵測：** 先填 Token 開始偵測，再邀請 Bot 加入；清單自動顯示名稱與 ID，支援方向鍵選取、名稱搜尋或手動輸入 ID。
 - **匿名投稿：** 純文字最多 4000 字，發布前二次確認；長文自動排版為最多 10 張 1080 × 1350 字卡。
 - **投稿管理：** 本人投稿分頁、刪文確認、檢舉、管理員封鎖、暫停投稿及待處理事項核對。
 - **資料保護：** 每台獨立設定、SQLite 資料庫、備份與輪替日誌；避免重複部署同一 Token，停止程序會核對身分。
@@ -125,10 +126,11 @@ uv tool update-shell
 ## 第一次啟動
 
 1. 在 Telegram 的 [@BotFather](https://t.me/BotFather) 建立 Bot，取得 **Bot Token**。
-2. 將 Bot 加入目標群組或頻道，授予傳送圖片、發文及刪除訊息所需權限。頻道需要管理員發文權限。
-3. 執行 `tgbot`，在輸入框輸入 `tgbot config` 開啟控制面板，再選擇「新增機器人」並輸入名稱，例如 `school`。
-4. 填寫 Token、目標群組／頻道 ID、管理員 Telegram User ID，確認字型路徑，按 **Ctrl+S 儲存**。
-5. 在面板啟動，或執行以下指令：
+2. 執行 `tgbot`，在輸入框輸入 `tgbot config`，選擇「新增機器人」並輸入名稱，例如 `school`。
+3. 在 **Bot Token** 按 Enter 輸入 Token，再按 Enter 套用；移到下一列 **偵測群組／頻道** 按 Enter。這一步不必先填其他欄位或 Ctrl+S 儲存。
+4. 畫面顯示「等待邀請」後，到 Telegram 邀請 Bot 加入群組或頻道。回到 **目標群組／頻道 ID** 按 Enter，以 ↓ 選名稱與 ID，再按 Enter 帶入；也能搜尋名稱或手動輸入 ID。
+5. 授予傳送圖片、發文及刪除訊息所需權限；頻道需要管理員發文權限。填寫管理員 Telegram User ID、確認字型路徑，按 **Ctrl+S 儲存**。
+6. 在面板選擇「背景啟動」，或執行以下指令：
 
 ```bash
 tgbot check school
@@ -137,6 +139,8 @@ tgbot status
 ```
 
 目標 ID 必須是負整數，超級群組與頻道通常為 `-100…`；管理員 User ID 是正整數。`check` 只驗證本機設定，`start` 才會連線檢查 Token 與目標權限。顯示「執行中」後，投稿者即可私訊 Bot。
+
+已加入的舊群組未出現時，在開始偵測後傳送 `/start@你的機器人帳號`；頻道則發一則新貼文。正式背景程序也會持續登記群組，不必一直開著面板。Telegram 不提供全部既有群組名單；偵測只包含收到通知或曾記錄的群組。更多操作與限制見[即時群組／頻道偵測](docs/MULTI_BOT_CLI.md#即時群組頻道偵測)。
 
 再新增另一台，只要使用不同名稱與 Token：
 
@@ -244,6 +248,8 @@ tgbot start
 - **自訂位置：** 啟動前設定 `TGBOT_HOME`，並讓面板、啟停指令與開機服務使用同一個目錄。
 
 每台資料存放於 `bots/名稱/`，包含 `.env`、`data/bot.sqlite3`、`data/backups/` 及 `bot.log`。`.env.bak` 是上一次設定，也含秘密資料。請用相同作業系統帳號操作；不要把資料夾放進公開儲存庫。
+
+群組清單 `chats-機器人數字ID.json` 只記錄群組／頻道名稱、ID、類型、加入狀態及更新識別資訊，不保存群組訊息內容、群組發言者或 Token。此清單同樣屬於私人資料，已加入忽略規則。
 
 成功發布後不另外保存投稿全文，會保存作者 User ID、文章與 Telegram 訊息 ID、時間、狀態及內容 HMAC。待確認原文 24 小時後到期；備份可能保留備份當時的原文及檢舉資料。Telegram 私訊與群組副本仍受 Telegram 本身的資料保存方式影響，`/privacy` 有完整說明。
 

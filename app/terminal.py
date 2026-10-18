@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import builtins
+import asyncio
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -20,6 +21,7 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Frame, TextArea
 
 from app import __version__
+from app.chat_discovery import CHAT_LABELS, cached_chats, watch_chats
 from app.config import ConfigurationError, read_dotenv
 from app.manager import BotManager
 from app.settings_editor import FIELDS, initial_values, save_config, validate_field
@@ -121,16 +123,58 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
     original = path.read_bytes()
     values = initial_values(path)
     actions = {"start": "背景啟動", "stop": "停止機器人", "restart": "重啟機器人", "backup": "立即備份", "logs": "查看最近日誌", "delete": "刪除機器人"}
-    keys = list(FIELDS) + list(actions)
+    basic_keys = ["BOT_TOKEN", "discover", *(key for key in FIELDS if key != "BOT_TOKEN")]
+    keys = basic_keys + list(actions)
     index, editing, dirty, message = 0, False, False, ""
+    chats = cached_chats(folder, values["BOT_TOKEN"])
+    discovery_task = None
+    discovery_notice = ""
+    channel_index, channel_original = 0, ""
+    cursor_rows = {}
     message_style = "class:muted"
     field = TextArea(multiline=False, height=1, style="class:input", password=Condition(lambda: keys[index] == "BOT_TOKEN"))
     bindings = KeyBindings()
     app = None
 
+    def channel_choices():
+        query = "" if field.text == channel_original else field.text.strip().casefold()
+        return [chat for chat in chats if query in chat["title"].casefold() or query in str(chat["id"])]
+
+    def input_changed(_):
+        nonlocal channel_index
+        channel_index = 0
+
+    field.buffer.on_text_changed += input_changed
+
+    async def discover(token):
+        nonlocal chats, discovery_notice, channel_index
+        try:
+            async for found, notice in watch_chats(manager, name, token, values["CHANNEL_ID"]):
+                choices = channel_choices() if editing and keys[index] == "CHANNEL_ID" else []
+                selected_id = choices[channel_index - 1]["id"] if 0 < channel_index <= len(choices) else None
+                chats, discovery_notice = found, notice
+                if selected_id is not None:
+                    channel_index = next((number for number, chat in enumerate(channel_choices(), 1)
+                                          if chat["id"] == selected_id), 0)
+                app.invalidate()
+        except ConfigurationError as exc:
+            discovery_notice = str(exc)
+        except (OSError, RuntimeError):
+            discovery_notice = "無法讀寫群組清單，請確認資料目錄權限或稍後重試"
+
+    def discovery_done(task):
+        nonlocal discovery_task
+        if discovery_task is task:
+            discovery_task = None
+        app.invalidate()
+
     def apply_edit():
-        nonlocal editing, dirty, message, message_style
+        nonlocal editing, dirty, message, message_style, chats, discovery_notice
         key = keys[index]
+        if key == "CHANNEL_ID" and channel_index:
+            choices = channel_choices()
+            if channel_index <= len(choices):
+                field.text = str(choices[channel_index - 1]["id"])
         value = field.text.strip()
         if key == "BOT_TOKEN" and not value:
             editing = False
@@ -140,6 +184,11 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
             value = value[1:-1]
         try:
             validate_field(key, value, folder)
+            if key == "BOT_TOKEN" and values[key] != value:
+                if discovery_task is not None:
+                    discovery_task.cancel()
+                chats = cached_chats(folder, value)
+                discovery_notice = "Token 已變更，請重新開始偵測"
             dirty |= values[key] != value
             values[key] = value
             message, editing = "已修改，Ctrl+S 儲存", False
@@ -159,13 +208,37 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
         nonlocal index
         index = min(len(keys) - 1, index + 1)
 
+    @bindings.add("up", filter=Condition(lambda: editing and keys[index] == "CHANNEL_ID"))
+    def previous_chat(event):
+        nonlocal channel_index
+        channel_index = max(0, channel_index - 1)
+
+    @bindings.add("down", filter=Condition(lambda: editing and keys[index] == "CHANNEL_ID"))
+    def next_chat(event):
+        nonlocal channel_index
+        channel_index = min(len(channel_choices()), channel_index + 1)
+
     @bindings.add("enter")
     def edit(event):
-        nonlocal editing, message, message_style
+        nonlocal editing, message, message_style, discovery_task, discovery_notice, channel_index, channel_original
         if editing:
             apply_edit()
             return
         key = keys[index]
+        if key == "discover":
+            if discovery_task is not None:
+                discovery_task.cancel()
+                discovery_notice = "偵測已停止；已記錄的清單保留"
+            else:
+                try:
+                    validate_field("BOT_TOKEN", values["BOT_TOKEN"], folder)
+                except ConfigurationError as exc:
+                    message, message_style = str(exc), "class:error"
+                    return
+                discovery_notice = "正在連線到 Telegram…"
+                discovery_task = event.app.create_background_task(discover(values["BOT_TOKEN"]))
+                discovery_task.add_done_callback(discovery_done)
+            return
         if key in actions:
             if dirty:
                 message = "請先 Ctrl+S 儲存修改，再執行這個操作"
@@ -174,7 +247,11 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
             return
         field.buffer.document = Document("" if key == "BOT_TOKEN" else values[key])
         field.buffer.cursor_position = len(field.text)
+        if key == "CHANNEL_ID":
+            channel_index, channel_original = 0, field.text
         message, editing = "Token 留空保留原值" if key == "BOT_TOKEN" else "Enter 套用此欄位；Esc 取消", True
+        if key == "CHANNEL_ID":
+            message = "輸入 ID／搜尋群組名稱 · ↓ 選取清單 · Enter 套用 · Esc 取消"
         message_style = "class:muted"
         event.app.layout.focus(field)
 
@@ -209,22 +286,59 @@ def settings_panel(manager: BotManager, name: str, *, input=None, output=None) -
         event.app.exit()
 
     def content():
+        nonlocal channel_index
         result = [("class:section", "  基本設定\n")]
-        for pos, key in enumerate(FIELDS):
-            value = "••••••••（已設定）" if key == "BOT_TOKEN" and values[key] else values[key] or "（未設定）"
-            result.append(("class:selected" if pos == index else "", (" › " if pos == index else "   ") + text_row(FIELDS[key], value) + "\n"))
+        row = 1
+        for pos, key in enumerate(basic_keys):
+            cursor_rows[pos] = row
+            if key == "discover":
+                label = "偵測群組／頻道"
+                value = ("偵測中 · Enter 停止" if discovery_task is not None else "Enter 開始偵測") + f" · 已記錄 {len(chats)} 個"
+            else:
+                label = FIELDS[key]
+                value = "••••••••（已設定）" if key == "BOT_TOKEN" and values[key] else values[key] or "（未設定）"
+                if key == "CHANNEL_ID" and not editing:
+                    chosen = next((chat for chat in chats if str(chat["id"]) == values[key]), None)
+                    if chosen:
+                        value = f"{chosen['title']}  {values[key]}"
+            result.append(("class:selected" if pos == index else "", (" › " if pos == index else "   ") + text_row(label, value) + "\n"))
+            row += 1
+            if key == "CHANNEL_ID" and editing and keys[index] == key:
+                choices = channel_choices()
+                channel_index = min(channel_index, len(choices))
+                result.append(("class:selected" if channel_index == 0 else "class:muted", "     手動輸入 ID／輸入名稱搜尋\n"))
+                row += 1
+                start = max(0, channel_index - 6)
+                for number, chat in enumerate(choices[start:start + 6], start + 1):
+                    selected = number == channel_index
+                    label = ("› " if selected else "  ") + chat["title"]
+                    result.append(("class:selected" if selected else "class:muted",
+                                   "     " + text_row(label, f"{chat['id']} · {CHAT_LABELS[chat['type']]}") + "\n"))
+                    if selected:
+                        cursor_rows[pos] = row
+                    row += 1
+                if not choices:
+                    result.append(("class:muted", "     尚無符合的群組；可手動輸入，或先開始偵測再邀請機器人\n"))
+                    row += 1
+                elif len(choices) > 6:
+                    result.append(("class:muted", f"     共 {len(choices)} 個，↑↓ 瀏覽更多\n"))
+                    row += 1
         result.append(("class:section", "\n  操作\n"))
-        for pos, (key, label) in enumerate(actions.items(), len(FIELDS)):
+        row += 2
+        for pos, (key, label) in enumerate(actions.items(), len(basic_keys)):
+            cursor_rows[pos] = row
             result.append(("class:selected" if pos == index else "", (" › " if pos == index else "   ") + label + "\n"))
+            row += 1
         result.extend([("class:section", "\n  資料\n"), ("class:muted", "   " + str(folder) + "\n   每台獨立保存設定、資料庫、備份與日誌。")])
         return result
 
-    control = FormattedTextControl(content, focusable=True, get_cursor_position=lambda: Point(x=0, y=index + 1 + (2 if index >= len(FIELDS) else 0)))
+    control = FormattedTextControl(content, focusable=True, get_cursor_position=lambda: Point(x=0, y=cursor_rows.get(index, 1)))
     body = HSplit([Window(control), ConditionalContainer(field, filter=Condition(lambda: editing)),
-                   Window(FormattedTextControl(lambda: [(message_style, " " + message)]), height=2),
+                   Window(FormattedTextControl(lambda: [("class:muted", " " + discovery_notice)]), height=2, wrap_lines=True),
+                   Window(FormattedTextControl(lambda: [(message_style, " " + message)]), height=2, wrap_lines=True),
                    Window(FormattedTextControl([("class:muted", " ↑↓ 移動 · Enter 編輯 · Ctrl+S 儲存 · Esc 返回／放棄未儲存修改")]), height=1)])
     app = Application(layout=Layout(Frame(body, title=f" {name} · 設定 "), control), style=STYLE,
-                      key_bindings=bindings, full_screen=True, input=input, output=output)
+                      key_bindings=bindings, full_screen=True, refresh_interval=1, input=input, output=output)
     return app.run()
 
 
