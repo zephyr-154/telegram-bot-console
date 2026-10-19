@@ -24,8 +24,10 @@ from app.keyboards import (
 )
 from app.messages import WELCOME_TEXT
 from app.services.admin import format_article, format_report_reply
+from app.services.admin_badges import with_attention_badges
 from app.services.deletion import delete_article_messages
 from app.services.publishing import publish_pending
+from app.services.reporting import handle_report_input
 from app.telegram_utils import delete_private_messages, try_delete_message
 from app.utils import clean_submission_text, iso_utc, normalize_article_id, pending_expired
 
@@ -108,8 +110,12 @@ async def admin_command(message: Message, bot: Bot, ctx: AppContext) -> None:
             await ctx.db.clear_state(user_id)
         await try_delete_message(bot, message.chat.id, message.message_id)
         paused = await ctx.db.submissions_paused()
-        panel = await message.answer("管理員面板\n投稿狀態：" + ("暫停" if paused else "開放"), reply_markup=admin_keyboard())
-        await ctx.db.set_state(user_id, "admin_panel", {"panel_message_id": panel.message_id}, iso_utc())
+        keyboard = with_attention_badges(admin_keyboard(), *await ctx.db.attention_counts())
+        panel = await message.answer("管理員面板\n投稿狀態：" + ("暫停" if paused else "開放"), reply_markup=keyboard)
+        ctx.admin_badge_cache.pop(user_id, None)
+        await ctx.db.set_state(user_id, "admin_panel", {
+            "panel_message_id": panel.message_id, "panel_keyboard": keyboard.model_dump(mode="json"),
+        }, iso_utc())
 
 
 @router.message(F.chat.type == ChatType.PRIVATE, F.text)
@@ -127,6 +133,13 @@ async def private_text(message: Message, bot: Bot, ctx: AppContext) -> None:
     state = await ctx.db.get_state(user_id)
     if state and state["state"] in {"admin_wait_speech", "admin_wait_report_reply"} and user_id in ctx.settings.admin_user_ids:
         await _handle_admin_text(message, bot, ctx, state)
+        return
+
+    if state and state["state"] in {"report_wait_id", "report_wait_reason"} and not command_head.startswith("/"):
+        async with ctx.user_locks[user_id]:
+            current = await ctx.db.get_state(user_id)
+            if current and current["state"] in {"report_wait_id", "report_wait_reason"}:
+                await handle_report_input(message, bot, ctx, current)
         return
 
     if text.strip().casefold() == "delete":

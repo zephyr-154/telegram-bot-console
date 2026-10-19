@@ -127,7 +127,13 @@ async def routing_smoke():
             await incoming("/cancel", actor=99)
             assert await db.get_state(99) is None
             article_id = (await db.list_user_articles(42, 10, 0))[0]["article_id"]
-            await incoming(f"/report {article_id} 檢舉原因", actor=43)
+            await incoming("/report", actor=43)
+            assert (await db.get_state(43))["state"] == "report_wait_id"
+            await incoming(article_id, actor=43)
+            assert (await db.get_state(43))["state"] == "report_wait_reason"
+            await incoming("檢舉原因", actor=43)
+            assert await db.get_state(43) is None
+            assert await db.get_pending_for_user(43) is None
             report_id = (await db.list_open_reports(10, 0))[0]["report_id"]
             await incoming("/admin", actor=99)
             panel_id = (await db.get_state(99))["payload"]["panel_message_id"]

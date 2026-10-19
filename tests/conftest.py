@@ -33,6 +33,7 @@ class FakeBot:
         self.serial = 100
         self.messages = []
         self.edits = []
+        self.markup_edits = []
         self.photo_calls = []
         self.media_calls = []
         self.deleted = []
@@ -50,6 +51,9 @@ class FakeBot:
     async def edit_message_text(self, **kwargs):
         assert len(kwargs["text"]) <= 4096
         self.edits.append(kwargs)
+
+    async def edit_message_reply_markup(self, **kwargs):
+        self.markup_edits.append(kwargs)
 
     async def send_photo(self, **kwargs):
         self.photo_calls.append(kwargs)

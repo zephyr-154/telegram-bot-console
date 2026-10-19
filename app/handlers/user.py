@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
@@ -12,11 +10,11 @@ from app.context import AppContext
 from app.handlers.private import clear_user_operation, prompt_article_deletion
 from app.keyboards import home_keyboard, page_buttons
 from app.messages import PRIVACY_TEXT, WELCOME_TEXT
-from app.services.admin import notify_admin
-from app.utils import article_status_text, iso_utc, message_link, normalize_article_id, utc_now
+from app.services.reporting import submit_report
+from app.utils import article_status_text, iso_utc, message_link, normalize_article_id
 
 router = Router(name="user_commands")
-REPORT_HELP = "私訊輸入：/report 文章ID 檢舉原因\n例如：/report XG_ABCDEFGH 冒用他人身分\n原因限 1 至 500 字，每人 10 分鐘最多 3 件；相同文章只能檢舉一次。"
+REPORT_HELP = "私訊輸入 /report，再依提示填寫文章 ID 和檢舉原因。\n原因限 1 至 500 字，每人 10 分鐘最多 3 件；相同文章只能檢舉一次。輸入 /cancel 可取消。"
 
 
 @router.message(Command("help", "privacy"), F.chat.type == ChatType.PRIVATE)
@@ -51,31 +49,22 @@ async def help_callback(callback: CallbackQuery) -> None:
 @router.message(Command("report"), F.chat.type == ChatType.PRIVATE)
 async def report_command(message: Message, bot: Bot, ctx: AppContext) -> None:
     parts = (message.text or "").split(maxsplit=2)
-    if len(parts) != 3:
-        await message.answer(REPORT_HELP)
-        return
-    article_id, reason = normalize_article_id(parts[1]), parts[2].strip()
-    if not article_id or not reason or len(reason) > 500:
-        await message.answer("請填寫正確的文章 ID，檢舉原因需為 1 至 500 字。")
-        return
     user_id = message.from_user.id
     if ctx.user_locks[user_id].locked():
         await message.answer("目前有操作正在處理，請稍後再檢舉。")
         return
     async with ctx.user_locks[user_id]:
-        article = await ctx.db.get_article(article_id)
-        if not article or article["status"] == "deleted":
-            await message.answer("文章不存在或已刪除。")
+        if len(parts) != 3:
+            await clear_user_operation(message, bot, ctx, user_id)
+            await ctx.db.set_state(user_id, "report_wait_id", {}, iso_utc())
+            await message.answer("請輸入要檢舉的文章 ID，例如 XG_ABCDEFGH。輸入 /cancel 可取消。")
             return
-        now = utc_now()
-        result = await ctx.db.create_report(article_id, user_id, reason, iso_utc(now), iso_utc(now - timedelta(minutes=10)))
-        if result == "duplicate":
-            await message.answer("你已檢舉過這篇文章，請等待管理員處理。")
-        elif result == "limited":
-            await message.answer("檢舉太頻繁，每人 10 分鐘最多 3 件，請稍後再試。")
-        else:
-            await message.answer(f"已收到 #{article_id} 的檢舉，將由管理員處理。")
-            await notify_admin(ctx, bot, f"收到 #{article_id} 的檢舉，請查看管理面板的待處理事項。")
+        article_id, reason = normalize_article_id(parts[1]), parts[2].strip()
+        if not article_id or not reason or len(reason) > 500:
+            await message.answer("請填寫正確的文章 ID，檢舉原因需為 1 至 500 字。")
+            return
+        await clear_user_operation(message, bot, ctx, user_id)
+        await submit_report(message, bot, ctx, article_id, reason)
 
 
 @router.message(Command("myposts"), F.chat.type == ChatType.PRIVATE)

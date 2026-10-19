@@ -13,6 +13,7 @@ from app.backup import backup_database
 from app.context import AppContext
 from app.keyboards import admin_article_keyboard, admin_back_keyboard, admin_force_keyboard, admin_keyboard, admin_report_keyboard, admin_resolution_keyboard, page_buttons
 from app.services.admin import admin_stats, format_article, format_report, format_report_reply
+from app.services.admin_badges import decorate_admin_keyboard
 from app.services.deletion import delete_article_messages
 from app.services.publishing import _wait_for_send_slot
 from app.telegram_utils import try_delete_message
@@ -49,6 +50,9 @@ async def update_admin_panel(
     state_payload: dict | None = None,
 ) -> int:
     """Edit the current admin panel, replacing it only if Telegram removed it."""
+    reply_markup = await decorate_admin_keyboard(ctx, reply_markup, state_payload)
+    state_payload = {**(state_payload or {}), "panel_keyboard": reply_markup.model_dump(mode="json")}
+    ctx.admin_badge_cache.pop(user_id, None)
     panel_message_id = current_panel_id
     if panel_message_id is not None:
         try:
@@ -510,6 +514,8 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
             await update_admin_panel(
                 bot, ctx, user_id=user_id, chat_id=chat_id, current_panel_id=panel_id,
                 text="\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+                state_payload={"badge_scope": "issues" if action == "issues" else "reports",
+                               "badge_article_id": article_filter},
             )
             return
         if action in {"review", "resolve"} and len(parts) == 3:
@@ -532,7 +538,7 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
                 messages = await ctx.db.get_article_messages(article_id)
                 text = format_article(article, messages, ctx.settings.timezone)
                 keyboard = admin_article_keyboard(article_id, bool(article.get("publish_error_code") or article.get("delete_error_code")))
-                state_name, state_payload = "admin_panel", None
+                state_name, state_payload = "admin_panel", {"article_id": article_id}
             await update_admin_panel(
                 bot, ctx, user_id=user_id, chat_id=chat_id, current_panel_id=panel_id,
                 text=text, reply_markup=keyboard, state_name=state_name, state_payload=state_payload,

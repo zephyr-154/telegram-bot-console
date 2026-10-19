@@ -16,6 +16,7 @@ from app.chat_discovery import ChatRegistry, ChatTrackingMiddleware, DISCOVERY_U
 from app.context import AppContext
 from app.database import Database
 from app.handlers import admin, private, user
+from app.services.admin_badges import watch_admin_badges
 from app.telegram_utils import delete_private_messages
 from app.utils import PENDING_TTL, iso_utc, utc_now
 
@@ -92,6 +93,7 @@ async def run(env_path: str | Path | None = None, *, ready_callback: Callable[[]
         with database_lock(settings.database_path):
             ctx = AppContext(settings=settings, db=db)
             maintenance = None
+            badges = None
             try:
                 await db.open()
                 await db.discard_incomplete_articles()
@@ -112,10 +114,15 @@ async def run(env_path: str | Path | None = None, *, ready_callback: Callable[[]
                 dispatcher.include_router(private.router)
                 dispatcher.include_router(admin.router)
                 maintenance = asyncio.create_task(_maintenance(ctx, bot))
+                badges = asyncio.create_task(watch_admin_badges(ctx, bot))
                 if ready_callback is not None:
                     ready_callback()
                 await dispatcher.start_polling(bot, allowed_updates=sorted(set(dispatcher.resolve_used_update_types()) | DISCOVERY_UPDATES))
             finally:
+                if badges:
+                    badges.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await badges
                 if maintenance:
                     maintenance.cancel()
                     with suppress(asyncio.CancelledError):

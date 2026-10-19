@@ -19,3 +19,4 @@ class AppContext:
     publish_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     send_times: deque[float] = field(default_factory=deque)
     publish_tasks: set[asyncio.Task] = field(default_factory=set)
+    admin_badge_cache: dict[int, tuple[int, str]] = field(default_factory=dict)

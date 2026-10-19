@@ -18,6 +18,6 @@ WELCOME_TEXT = (
     "投稿確認期限為 24 小時。輸入 delete 可刪除自己的文章，也可從「我的投稿」操作。\n\n"
     "對群組成員匿名；系統會保存作者 Telegram User ID，管理員可以查詢。"
     "發布後原文仍會留在 Telegram 私訊。Bot 自動刪文期限一般為 48 小時。\n\n"
-    "/myposts 我的投稿\n/report 文章ID 原因：檢舉文章\n"
+    "/myposts 我的投稿\n/report 檢舉文章（依提示輸入文章 ID 與原因）\n"
     "/privacy 完整匿名與保存說明\n/cancel 取消目前操作\n/help 操作說明"
 )

@@ -563,6 +563,22 @@ class Database:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    async def attention_counts(self) -> tuple[int, int]:
+        row = self._conn().execute(
+            "SELECT (SELECT COUNT(*) FROM articles WHERE publish_error_code IS NOT NULL "
+            "OR delete_error_code IS NOT NULL) AS issues, "
+            "(SELECT COUNT(*) FROM reports WHERE status = 'open') AS reports"
+        ).fetchone()
+        return row["issues"], row["reports"]
+
+    async def count_open_reports(self, article_id: str | None = None) -> int:
+        condition = " AND article_id = ?" if article_id else ""
+        row = self._conn().execute(
+            "SELECT COUNT(*) FROM reports WHERE status = 'open'" + condition,
+            (article_id,) if article_id else (),
+        ).fetchone()
+        return row[0]
+
     async def create_report(self, article_id: str, user_id: int, reason: str, now: str, since: str) -> str:
         if not reason.strip() or len(reason) > 500 or user_id <= 0:
             raise ValueError("檢舉原因需為 1 至 500 字。")

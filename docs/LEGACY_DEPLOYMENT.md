@@ -80,7 +80,7 @@ Bot 必須先加入目標並取得傳送圖片與刪除訊息所需權限；頻�
 
 ```text
 /myposts
-/report XG_ABCDEFGH 冒用他人身分
+/report
 /privacy
 /cancel
 ```
