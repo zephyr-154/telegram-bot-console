@@ -89,6 +89,21 @@ CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at_utc)
 CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_user_id, created_at_utc);
 """
 
+REPORT_ACTIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS report_actions (
+    action_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL REFERENCES reports(report_id) ON DELETE CASCADE,
+    admin_user_id INTEGER CHECK (admin_user_id > 0),
+    action TEXT NOT NULL CHECK (action IN ('reply', 'close')),
+    status TEXT NOT NULL,
+    created_at_utc TEXT NOT NULL,
+    completed_at_utc TEXT,
+    message_id INTEGER,
+    CHECK ((action = 'reply' AND status IN ('sending', 'sent', 'failed', 'uncertain'))
+        OR (action = 'close' AND status = 'closed'))
+)
+"""
+
 
 class Database:
     """Small async-compatible SQLite facade.
@@ -110,12 +125,19 @@ class Database:
             check_same_thread=False,
         )
         self.connection.row_factory = sqlite3.Row
+        existing_schema = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'articles'"
+        ).fetchone() is not None
         self.connection.executescript(SCHEMA)
         columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(articles)")}
         pending_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(pending_submissions)")}
         report_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(reports)")}
+        actions_missing = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'report_actions'"
+        ).fetchone() is None
         if ("send_started_at_utc" not in columns or "target_chat_ids" not in columns
-                or "target_chat_ids" not in pending_columns or not {"reply_status", "reply_message_id"} <= report_columns):
+                or "target_chat_ids" not in pending_columns or not {"reply_status", "reply_message_id"} <= report_columns
+                or (existing_schema and actions_missing)):
             backup_database(self.path, self.path.parent / "backups")
         self.connection.execute("BEGIN IMMEDIATE")
         try:
@@ -128,6 +150,16 @@ class Database:
                 self.connection.execute("ALTER TABLE reports ADD COLUMN reply_status TEXT NOT NULL DEFAULT 'none'")
             if "reply_message_id" not in report_columns:
                 self.connection.execute("ALTER TABLE reports ADD COLUMN reply_message_id INTEGER")
+            self.connection.execute(REPORT_ACTIONS_TABLE)
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_report_actions_report ON report_actions(report_id, action_id)"
+            )
+            self.connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_report_actions_sending ON report_actions(report_id) WHERE status = 'sending'"
+            )
+            self.connection.execute(
+                "UPDATE report_actions SET status = 'uncertain', completed_at_utc = ? WHERE status = 'sending'", (iso_utc(),)
+            )
             self.connection.execute("UPDATE reports SET reply_status = 'uncertain' WHERE reply_status = 'sending'")
             if "send_started_at_utc" not in columns:
                 self.connection.execute(
@@ -617,26 +649,82 @@ class Database:
         row = self._conn().execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
         return dict(row) if row else None
 
-    async def claim_report_reply(self, report_id: int) -> bool:
-        cursor = self._conn().execute(
-            "UPDATE reports SET reply_status = 'sending' WHERE report_id = ? AND status = 'open' AND reply_status IN ('none', 'failed')",
-            (report_id,),
-        )
-        return cursor.rowcount == 1
+    async def list_closed_reports(self, limit: int, offset: int) -> list[dict[str, Any]]:
+        rows = self._conn().execute(
+            "SELECT r.* FROM reports r LEFT JOIN report_actions a ON a.report_id = r.report_id AND a.action = 'close' "
+            "WHERE r.status = 'closed' ORDER BY a.created_at_utc DESC, r.report_id DESC LIMIT ? OFFSET ?", (limit, offset),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_report_actions(self, report_id: int, limit: int, offset: int) -> list[dict[str, Any]]:
+        rows = self._conn().execute(
+            "SELECT * FROM report_actions WHERE report_id = ? ORDER BY action_id DESC LIMIT ? OFFSET ?", (report_id, limit, offset),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def claim_report_reply(self, report_id: int, admin_user_id: int | None = None) -> bool:
+        if admin_user_id is not None and (type(admin_user_id) is not int or admin_user_id <= 0):
+            raise ValueError("管理員 User ID 必須為正整數")
+        conn = self._conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = conn.execute(
+                "UPDATE reports SET reply_status = 'sending' WHERE report_id = ? AND status = 'open' AND reply_status IN ('none', 'failed')",
+                (report_id,),
+            )
+            claimed = cursor.rowcount == 1
+            if claimed:
+                conn.execute(
+                    "INSERT INTO report_actions(report_id, admin_user_id, action, status, created_at_utc) VALUES (?, ?, 'reply', 'sending', ?)",
+                    (report_id, admin_user_id, iso_utc()),
+                )
+            conn.execute("COMMIT")
+            return claimed
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
     async def finish_report_reply(self, report_id: int, status: str, message_id: int | None = None) -> None:
         if status not in {"sent", "failed", "uncertain"} or (status == "sent" and (message_id is None or message_id <= 0)):
             raise ValueError("無效的檢舉回覆結果")
-        self._conn().execute(
-            "UPDATE reports SET reply_status = ?, reply_message_id = ? WHERE report_id = ? AND reply_status = 'sending'",
-            (status, message_id, report_id),
-        )
+        conn = self._conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = conn.execute(
+                "UPDATE reports SET reply_status = ?, reply_message_id = ? WHERE report_id = ? AND reply_status = 'sending'",
+                (status, message_id, report_id),
+            )
+            if cursor.rowcount:
+                conn.execute(
+                    "UPDATE report_actions SET status = ?, message_id = ?, completed_at_utc = ? "
+                    "WHERE report_id = ? AND status = 'sending'", (status, message_id, iso_utc(), report_id),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
-    async def close_report(self, report_id: int) -> bool:
-        cursor = self._conn().execute(
-            "UPDATE reports SET status = 'closed' WHERE report_id = ? AND status = 'open' AND reply_status <> 'sending'", (report_id,),
-        )
-        return cursor.rowcount == 1
+    async def close_report(self, report_id: int, admin_user_id: int | None = None) -> bool:
+        if admin_user_id is not None and (type(admin_user_id) is not int or admin_user_id <= 0):
+            raise ValueError("管理員 User ID 必須為正整數")
+        conn = self._conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = conn.execute(
+                "UPDATE reports SET status = 'closed' WHERE report_id = ? AND status = 'open' AND reply_status <> 'sending'", (report_id,),
+            )
+            closed = cursor.rowcount == 1
+            if closed:
+                now = iso_utc()
+                conn.execute(
+                    "INSERT INTO report_actions(report_id, admin_user_id, action, status, created_at_utc, completed_at_utc) "
+                    "VALUES (?, ?, 'close', 'closed', ?, ?)", (report_id, admin_user_id, now, now),
+                )
+            conn.execute("COMMIT")
+            return closed
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
     async def oldest_user_publication_between(
         self,

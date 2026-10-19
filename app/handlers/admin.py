@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.backup import backup_database
 from app.context import AppContext
 from app.keyboards import admin_article_keyboard, admin_back_keyboard, admin_force_keyboard, admin_keyboard, admin_report_keyboard, admin_resolution_keyboard, page_buttons
-from app.services.admin import admin_stats, format_article, format_report, format_report_reply
+from app.services.admin import admin_stats, format_article, format_report, format_report_action, format_report_reply
 from app.services.admin_badges import decorate_admin_keyboard
 from app.services.deletion import delete_article_messages
 from app.services.publishing import _wait_for_send_slot
@@ -228,6 +228,34 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
         if state is None:
             return
 
+        if action == "report_history" and len(parts) == 4:
+            if (not parts[2].isdigit() or len(parts[2]) > 18 or int(parts[2]) <= 0
+                    or not parts[3].isdigit() or len(parts[3]) > 6):
+                return
+            report_id, page = int(parts[2]), int(parts[3])
+            report = await ctx.db.get_report(report_id)
+            if not report:
+                await update_report_panel(bot, ctx, user_id, chat_id, panel_id, report_id)
+                return
+            rows = await ctx.db.list_report_actions(report_id, 6, page * 5)
+            lines = [f"檢舉 #{report_id} 的處理紀錄（第 {page + 1} 頁）\n文章：#{report['article_id']}\n時區：{ctx.settings.timezone}"]
+            lines.extend(format_report_action(row, ctx.settings.timezone) for row in rows[:5])
+            if not rows:
+                lines.append("尚無處理紀錄；舊版本未記錄的處理者與時間無法回溯。" if page == 0 else "此頁沒有紀錄，請返回上一頁。")
+            elif page == 0 and report["reply_status"] != "none" and not any(row["action"] == "reply" for row in rows):
+                lines.append("舊版回覆未記錄處理者與時間，原有回覆狀態可返回檢舉詳情查看。")
+            buttons = []
+            navigation = page_buttons(f"admin:report_history:{report_id}", page, len(rows) > 5)
+            if navigation:
+                buttons.append(navigation)
+            buttons.append([InlineKeyboardButton(text="返回檢舉", callback_data=f"admin:report:{report_id}")])
+            await update_admin_panel(
+                bot, ctx, user_id=user_id, chat_id=chat_id, current_panel_id=panel_id,
+                text="\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+                state_name="admin_report_history", state_payload={"report_id": report_id},
+            )
+            return
+
         if action in {"report", "report_reply", "report_close", "reply_edit", "reply_send", "report_close_yes"}:
             expected_length = 4 if action in {"reply_edit", "reply_send", "report_close_yes"} else 3
             if len(parts) != expected_length or not parts[2].isdigit() or len(parts[2]) > 18 or int(parts[2]) <= 0:
@@ -262,7 +290,7 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
                 return
             if action == "report_close_yes":
                 async with ctx.article_locks[report["article_id"]]:
-                    closed = await ctx.db.close_report(report_id)
+                    closed = await ctx.db.close_report(report_id, user_id)
                 await update_report_panel(bot, ctx, user_id, chat_id, panel_id, report_id,
                                           "已結案，未另外發送通知。" if closed else "這筆檢舉已結案或正在傳送回覆，請稍後確認。")
                 return
@@ -282,7 +310,7 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
             async with ctx.article_locks[report["article_id"]]:
                 # Claim the report in SQLite before the RPC so another administrator or a restart cannot resend it.
                 await ctx.db.set_state(user_id, "admin_report_reply_sending", {"panel_message_id": panel_id, "report_id": report_id}, iso_utc())
-                if await ctx.db.claim_report_reply(report_id):
+                if await ctx.db.claim_report_reply(report_id, user_id):
                     result = await _send_report_reply(bot, ctx, report, payload["text"])
                     notice = {"sent": "已回覆檢舉人。檢舉尚未結案，請確認後按「結案」。",
                               "failed": "回覆未送出，對方可能已封鎖機器人或暫時無法收訊息；可重新回覆，或選擇不回覆結案。",
@@ -482,7 +510,7 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
                 text="待處理事項：請選擇分類。", reply_markup=keyboard,
             )
             return
-        if (action in {"issues", "reports"} and len(parts) == 3) or (action == "article_reports" and len(parts) == 4):
+        if (action in {"issues", "reports", "closed_reports"} and len(parts) == 3) or (action == "article_reports" and len(parts) == 4):
             page_part = parts[3] if action == "article_reports" else parts[2]
             article_filter = normalize_article_id(parts[2]) if action == "article_reports" else None
             if (action == "article_reports" and not article_filter) or not page_part.isdigit() or len(page_part) > 6:
@@ -491,9 +519,14 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
             size = 10 if action == "issues" else 3
             if action == "issues":
                 rows = await ctx.db.list_attention_articles(size + 1, page * size)
+                title, badge_scope = "發布／刪文待處理", "issues"
+            elif action == "closed_reports":
+                rows = await ctx.db.list_closed_reports(size + 1, page * size)
+                title, badge_scope = "已結案檢舉", "closed_reports"
             else:
                 rows = await ctx.db.list_open_reports(size + 1, page * size, article_filter)
-            lines = [f"{'發布／刪文' if action == 'issues' else '檢舉'}待處理（第 {page + 1} 頁）"]
+                title, badge_scope = "檢舉待處理", "reports"
+            lines = [f"{title}（第 {page + 1} 頁）"]
             buttons = []
             for row in rows[:size]:
                 article_id = row["article_id"]
@@ -502,20 +535,23 @@ async def admin_callback(callback: CallbackQuery, bot: Bot, ctx: AppContext) -> 
                 else:
                     detail = f"檢舉 #{row['report_id']}：{row['reason']}"
                 lines.append(f"\n#{article_id}\n{detail}")
-                buttons.append([InlineKeyboardButton(text=f"處理 #{article_id}" if action == "issues" else f"處理檢舉 #{row['report_id']}",
+                label = f"處理 #{article_id}" if action == "issues" else f"{'查看' if action == 'closed_reports' else '處理'}檢舉 #{row['report_id']}"
+                buttons.append([InlineKeyboardButton(text=label,
                                                      callback_data=f"admin:review:{article_id}" if action == "issues" else f"admin:report:{row['report_id']}")])
             if not rows:
-                lines.append("目前沒有待處理紀錄。")
+                lines.append("目前沒有已結案檢舉。" if action == "closed_reports" else "目前沒有待處理紀錄。")
             prefix = f"admin:article_reports:{article_filter}" if action == "article_reports" else f"admin:{action}"
             navigation = page_buttons(prefix, page, len(rows) > size)
             if navigation:
                 buttons.append(navigation)
-            buttons.append([InlineKeyboardButton(text="返回待處理事項", callback_data="admin:pending")])
+            buttons.append([InlineKeyboardButton(
+                text="返回管理面板" if action == "closed_reports" else "返回待處理事項",
+                callback_data="admin:back" if action == "closed_reports" else "admin:pending",
+            )])
             await update_admin_panel(
                 bot, ctx, user_id=user_id, chat_id=chat_id, current_panel_id=panel_id,
                 text="\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-                state_payload={"badge_scope": "issues" if action == "issues" else "reports",
-                               "badge_article_id": article_filter},
+                state_payload={"badge_scope": badge_scope, "badge_article_id": article_filter},
             )
             return
         if action in {"review", "resolve"} and len(parts) == 3:

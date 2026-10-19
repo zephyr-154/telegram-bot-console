@@ -10,11 +10,11 @@ from app.context import AppContext
 from app.handlers.private import clear_user_operation, prompt_article_deletion
 from app.keyboards import home_keyboard, page_buttons
 from app.messages import PRIVACY_TEXT, WELCOME_TEXT
-from app.services.reporting import submit_report
+from app.services.reporting import prompt_report_reason, submit_report
 from app.utils import article_status_text, iso_utc, message_link, normalize_article_id
 
 router = Router(name="user_commands")
-REPORT_HELP = "私訊輸入 /report，再依提示填寫文章 ID 和檢舉原因。\n原因限 1 至 500 字，每人 10 分鐘最多 3 件；相同文章只能檢舉一次。輸入 /cancel 可取消。"
+REPORT_HELP = "私訊輸入 /report，再依提示填寫文章 ID 和檢舉原因；也可輸入 /report XG_ABCDEFGH，直接填寫原因。\n原因限 1 至 500 字，每人 10 分鐘最多 3 件；相同文章只能檢舉一次。輸入 /cancel 可取消。"
 
 
 @router.message(Command("help", "privacy"), F.chat.type == ChatType.PRIVATE)
@@ -54,9 +54,12 @@ async def report_command(message: Message, bot: Bot, ctx: AppContext) -> None:
         await message.answer("目前有操作正在處理，請稍後再檢舉。")
         return
     async with ctx.user_locks[user_id]:
-        if len(parts) != 3:
+        if len(parts) < 3:
             await clear_user_operation(message, bot, ctx, user_id)
             await ctx.db.set_state(user_id, "report_wait_id", {}, iso_utc())
+            if len(parts) == 2:
+                await prompt_report_reason(message, ctx, parts[1])
+                return
             await message.answer("請輸入要檢舉的文章 ID，例如 XG_ABCDEFGH。輸入 /cancel 可取消。")
             return
         article_id, reason = normalize_article_id(parts[1]), parts[2].strip()

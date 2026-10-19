@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 import json
 from datetime import timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 
 from app.context import AppContext
-from app.utils import article_status_text, iso_utc, message_link, taipei_now
+from app.utils import article_status_text, iso_utc, message_link, parse_datetime, taipei_now
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,21 @@ def format_report(report: dict) -> str:
 
 def format_report_reply(report: dict, text: str) -> str:
     return f"關於你對 #{report['article_id']} 的檢舉，管理員回覆：\n\n{text}"
+
+
+def format_report_action(action: dict, timezone_name: str) -> str:
+    zone = ZoneInfo(timezone_name)
+    created = parse_datetime(action["created_at_utc"]).astimezone(zone).strftime("%Y/%m/%d %H:%M:%S")
+    admin = action["admin_user_id"] or "未記錄"
+    if action["action"] == "close":
+        return f"結案\n管理員：{admin}\n時間：{created}"
+    result = {"sending": "正在傳送", "sent": "已送出", "failed": "未送出，可重新回覆",
+              "uncertain": "結果不明，不會自動重送"}[action["status"]]
+    text = f"回覆檢舉人：{result}\n管理員：{admin}\n開始時間：{created}"
+    if action["completed_at_utc"]:
+        completed = parse_datetime(action["completed_at_utc"]).astimezone(zone).strftime("%Y/%m/%d %H:%M:%S")
+        text += f"\n結果紀錄時間：{completed}"
+    return text
 
 
 async def admin_stats(ctx: AppContext) -> tuple[int, int]:

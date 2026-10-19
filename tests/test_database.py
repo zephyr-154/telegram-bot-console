@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 
+import pytest
+
 from app.database import Database
 
 
@@ -203,13 +205,84 @@ def test_report_reply_claim_survives_restart_and_prevents_duplicate_sends(tmp_pa
         await db.create_article("XG_ABCDEFGH", 42, "digest")
         await db.create_report("XG_ABCDEFGH", 43, "檢舉", "2026-10-18T00:00:00+00:00", "2026-10-17T00:00:00+00:00")
         report_id = (await db.list_open_reports(10, 0))[0]["report_id"]
-        assert await db.claim_report_reply(report_id)
+        assert await db.claim_report_reply(report_id, 99)
         assert not await db.claim_report_reply(report_id) and not await db.close_report(report_id)
         await db.close()
         await db.open()
         assert (await db.get_report(report_id))["reply_status"] == "uncertain"
+        actions = await db.list_report_actions(report_id, 10, 0)
+        assert len(actions) == 1 and actions[0]["admin_user_id"] == 99
+        assert actions[0]["status"] == "uncertain" and actions[0]["completed_at_utc"]
+        await db.finish_report_reply(report_id, "sent", 123)
+        assert (await db.list_report_actions(report_id, 10, 0)) == actions
         assert not await db.claim_report_reply(report_id)
         assert await db.close_report(report_id)
         assert not await db.close_report(report_id) and not await db.claim_report_reply(report_id)
         await db.close()
+    run(scenario())
+
+
+def test_report_history_upgrade_preserves_legacy_cases_and_backs_up_before_migration(tmp_path):
+    async def scenario():
+        db = Database(tmp_path / "bot.sqlite3")
+        await db.open()
+        await db.create_article("XG_ABCDEFGH", 42, "digest")
+        published = "2026-10-17T01:00:00+00:00"
+        await db.mark_published("XG_ABCDEFGH", published)
+        await db.create_report("XG_ABCDEFGH", 43, "舊案件", published, published)
+        report_id = (await db.list_open_reports(10, 0))[0]["report_id"]
+        db.connection.execute("UPDATE reports SET status = 'closed', reply_status = 'sent', reply_message_id = 123")
+        db.connection.execute("DROP TABLE report_actions")
+        await db.close()
+        await db.open()
+        report = await db.get_report(report_id)
+        assert report["status"] == "closed" and report["reply_status"] == "sent" and report["reply_message_id"] == 123
+        assert (await db.get_article("XG_ABCDEFGH"))["published_at_utc"] == published
+        assert not await db.list_report_actions(report_id, 10, 0)
+        assert [row["report_id"] for row in await db.list_closed_reports(10, 0)] == [report_id]
+        backups = list((tmp_path / "backups").glob("*.sqlite3"))
+        assert len(backups) == 1
+        snapshot = sqlite3.connect(backups[0])
+        try:
+            assert not snapshot.execute("SELECT 1 FROM sqlite_master WHERE name = 'report_actions'").fetchone()
+            assert snapshot.execute("SELECT reason FROM reports").fetchone()[0] == "舊案件"
+        finally:
+            snapshot.close()
+        await db.close()
+        await db.open()
+        assert len(list((tmp_path / "backups").glob("*.sqlite3"))) == 1
+        await db.close()
+    run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["claim", "finish", "close"])
+def test_report_state_and_history_commit_together(ctx, operation):
+    async def scenario():
+        await ctx.db.create_article("XG_ABCDEFGH", 42, "digest")
+        await ctx.db.create_report("XG_ABCDEFGH", 43, "檢舉", "2026-10-18T00:00:00+00:00", "2026-10-17T00:00:00+00:00")
+        report_id = (await ctx.db.list_open_reports(10, 0))[0]["report_id"]
+        if operation == "finish":
+            assert await ctx.db.claim_report_reply(report_id, 99)
+        before = await ctx.db.get_report(report_id)
+        actions_before = await ctx.db.list_report_actions(report_id, 10, 0)
+        event = "UPDATE" if operation == "finish" else "INSERT"
+        ctx.db.connection.execute(
+            f"CREATE TRIGGER reject_history BEFORE {event} ON report_actions BEGIN SELECT RAISE(ABORT, 'history unavailable'); END"
+        )
+
+        async def act():
+            if operation == "claim":
+                return await ctx.db.claim_report_reply(report_id, 99)
+            if operation == "finish":
+                return await ctx.db.finish_report_reply(report_id, "sent", 123)
+            return await ctx.db.close_report(report_id, 100)
+
+        with pytest.raises(sqlite3.IntegrityError, match="history unavailable"):
+            await act()
+        assert await ctx.db.get_report(report_id) == before
+        assert await ctx.db.list_report_actions(report_id, 10, 0) == actions_before
+        ctx.db.connection.execute("DROP TRIGGER reject_history")
+        await act()
+        assert await ctx.db.get_report(report_id) != before
+        assert await ctx.db.list_report_actions(report_id, 10, 0) != actions_before
     run(scenario())

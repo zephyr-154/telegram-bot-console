@@ -96,6 +96,9 @@ def test_two_admins_replying_to_same_report_send_only_once(ctx, bot):
         assert len([message for message in bot.messages if message["chat_id"] == 43]) == 1
         assert (await ctx.db.get_report(report_id))["status"] == "open"
         assert not ctx.publish_tasks
+        actions = await ctx.db.list_report_actions(report_id, 10, 0)
+        assert len(actions) == 1 and actions[0]["status"] == "sent"
+        assert actions[0]["admin_user_id"] in {99, 100}
     asyncio.run(scenario())
 
 
@@ -249,4 +252,99 @@ def test_interrupted_reply_remains_uncertain_and_cannot_be_replayed(ctx, bot, mo
         assert (await ctx.db.get_report(report_id))["reply_status"] == "uncertain"
         await click(ctx, bot, data)
         assert not [message for message in bot.messages if message["chat_id"] == 43]
+    asyncio.run(scenario())
+
+
+def test_reply_and_close_history_records_each_admin_without_reply_text(ctx, bot, monkeypatch):
+    ctx.settings = replace(ctx.settings, additional_admin_user_ids=(100,))
+    monkeypatch.setattr("app.database.iso_utc", lambda: "2026-10-19T04:30:00+00:00")
+
+    async def scenario():
+        report_id = (await seed(ctx))[43]
+        state = await draft(ctx, bot, report_id, text="只給檢舉人的私訊", user_id=100)
+        await click(ctx, bot, f"admin:reply_send:{report_id}:" + state["payload"]["nonce"], user_id=100)
+        await admin_command(bot.message(user_id=99, text="/admin"), bot, ctx)
+        await close(ctx, bot, report_id)
+        actions = await ctx.db.list_report_actions(report_id, 10, 0)
+        assert [(row["action"], row["status"], row["admin_user_id"]) for row in actions] == [
+            ("close", "closed", 99), ("reply", "sent", 100),
+        ]
+        assert all(row["created_at_utc"] and row["completed_at_utc"] for row in actions)
+        assert actions[1]["message_id"] == (await ctx.db.get_report(report_id))["reply_message_id"]
+        assert "只給檢舉人的私訊" not in str(actions)
+        await click(ctx, bot, f"admin:report_history:{report_id}:0")
+        text = bot.edits[-1]["text"]
+        assert "管理員：99" in text and "管理員：100" in text
+        assert "結案" in text and "已送出" in text and "Asia/Taipei" in text
+        assert "2026/10/19 12:30:00" in text
+        assert "只給檢舉人的私訊" not in text
+        await click(ctx, bot, f"admin:report:{report_id}")
+        callbacks = [button.callback_data for row in bot.edits[-1]["reply_markup"].inline_keyboard for button in row]
+        assert "admin:closed_reports:0" in callbacks
+        assert f"admin:report_reply:{report_id}" not in callbacks
+        assert f"admin:report_close:{report_id}" not in callbacks
+    asyncio.run(scenario())
+
+
+def test_failed_reply_attempt_is_kept_when_another_admin_retries(ctx, bot, monkeypatch):
+    ctx.settings = replace(ctx.settings, additional_admin_user_ids=(100,))
+    original_send = bot.send_message
+
+    async def rejected(**kwargs):
+        if kwargs["chat_id"] == 43:
+            raise TelegramForbiddenError(method=SendMessage(**kwargs), message="blocked by user")
+        return await original_send(**kwargs)
+
+    async def scenario():
+        report_id = (await seed(ctx))[43]
+        state = await draft(ctx, bot, report_id)
+        monkeypatch.setattr(bot, "send_message", rejected)
+        await click(ctx, bot, f"admin:reply_send:{report_id}:" + state["payload"]["nonce"])
+        monkeypatch.setattr(bot, "send_message", original_send)
+        state = await draft(ctx, bot, report_id, user_id=100)
+        await click(ctx, bot, f"admin:reply_send:{report_id}:" + state["payload"]["nonce"], user_id=100)
+        actions = await ctx.db.list_report_actions(report_id, 10, 0)
+        assert [(row["admin_user_id"], row["status"]) for row in actions] == [(100, "sent"), (99, "failed")]
+    asyncio.run(scenario())
+
+
+def test_closed_report_query_is_paginated_and_keeps_open_cases_out(ctx, bot):
+    async def scenario():
+        reports = await seed(ctx, reporters=(43, 44, 45, 46, 47))
+        for reporter in (43, 44, 45, 46):
+            await ctx.db.close_report(reports[reporter], 99)
+        await admin_command(bot.message(user_id=99, text="/admin"), bot, ctx)
+        assert any(button.callback_data == "admin:closed_reports:0" for row in bot.messages[-1]["reply_markup"].inline_keyboard for button in row)
+        await click(ctx, bot, "admin:closed_reports:0")
+        first = bot.edits[-1]
+        assert "已結案檢舉" in first["text"] and "檢舉原因 47" not in first["text"]
+        callbacks = [button.callback_data for row in first["reply_markup"].inline_keyboard for button in row]
+        assert "admin:closed_reports:1" in callbacks
+        assert len([data for data in callbacks if data.startswith("admin:report:")]) == 3
+        await click(ctx, bot, "admin:closed_reports:1")
+        assert "檢舉原因 43" in bot.edits[-1]["text"] and "檢舉原因 47" not in bot.edits[-1]["text"]
+        assert await ctx.db.count_open_reports() == 1
+    asyncio.run(scenario())
+
+
+def test_report_history_is_paginated_and_unknown_legacy_actors_are_not_invented(ctx, bot):
+    async def scenario():
+        report_id = (await seed(ctx))[43]
+        await admin_command(bot.message(user_id=99, text="/admin"), bot, ctx)
+        await click(ctx, bot, f"admin:report_history:{report_id}:0")
+        assert "尚無處理紀錄" in bot.edits[-1]["text"]
+        for _ in range(6):
+            assert await ctx.db.claim_report_reply(report_id, 99)
+            await ctx.db.finish_report_reply(report_id, "failed")
+        await click(ctx, bot, f"admin:report_history:{report_id}:0")
+        first = bot.edits[-1]
+        assert first["text"].count("管理員：99") == 5
+        assert any(button.callback_data == f"admin:report_history:{report_id}:1" for row in first["reply_markup"].inline_keyboard for button in row)
+        await click(ctx, bot, f"admin:report_history:{report_id}:1")
+        assert bot.edits[-1]["text"].count("管理員：99") == 1
+        edits = len(bot.edits)
+        panel_id = (await ctx.db.get_state(99))["payload"]["panel_message_id"]
+        await click(ctx, bot, f"admin:report_history:{report_id}:0", user_id=42, panel_id=panel_id)
+        await click(ctx, bot, "admin:closed_reports:0", user_id=42, panel_id=panel_id)
+        assert len(bot.edits) == edits
     asyncio.run(scenario())

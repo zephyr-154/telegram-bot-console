@@ -48,6 +48,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="待處理事項", callback_data="admin:pending"),
                 InlineKeyboardButton(text="暫停／恢復投稿", callback_data="admin:pause"),
             ],
+            [InlineKeyboardButton(text="已結案檢舉", callback_data="admin:closed_reports:0")],
             [InlineKeyboardButton(text="立即備份資料庫", callback_data="admin:backup")],
         ]
     )
@@ -104,7 +105,11 @@ def admin_report_keyboard(report: dict) -> InlineKeyboardMarkup:
             rows.append([InlineKeyboardButton(text="回覆檢舉人", callback_data=f"admin:report_reply:{report_id}")])
         rows.append([InlineKeyboardButton(text="結案（不另回覆）" if report["reply_status"] in {"none", "failed"} else "結案",
                                           callback_data=f"admin:report_close:{report_id}")])
-    rows.append([InlineKeyboardButton(text="返回檢舉清單", callback_data="admin:reports:0")])
+    rows.append([InlineKeyboardButton(text="處理紀錄", callback_data=f"admin:report_history:{report_id}:0")])
+    rows.append([InlineKeyboardButton(
+        text="返回已結案檢舉" if report["status"] == "closed" else "返回檢舉清單",
+        callback_data="admin:closed_reports:0" if report["status"] == "closed" else "admin:reports:0",
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

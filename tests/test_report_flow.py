@@ -16,6 +16,44 @@ async def seed(ctx):
     await ctx.db.mark_published(ARTICLE, iso_utc())
 
 
+@pytest.mark.parametrize("article_input", [ARTICLE, "#xg_abcdefgh"])
+def test_report_with_id_asks_only_for_reason(ctx, bot, article_input):
+    async def scenario():
+        await seed(ctx)
+        await make_pending(ctx)
+        await report_command(bot.message(text=f"/report {article_input}"), bot, ctx)
+        state = await ctx.db.get_state(42)
+        assert state["state"] == "report_wait_reason" and state["payload"]["article_id"] == ARTICLE
+        assert "請填寫檢舉原因" in bot.messages[-1]["text"]
+        assert not await ctx.db.get_pending_for_user(42)
+        assert not await ctx.db.list_open_reports(10, 0)
+        await private_text(bot.message(text="檢舉原因"), bot, ctx)
+        reports = await ctx.db.list_open_reports(10, 0)
+        assert len(reports) == 1 and reports[0]["article_id"] == ARTICLE and reports[0]["reason"] == "檢舉原因"
+        assert not await ctx.db.get_state(42)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("article_input,deleted", [("不是ID", False), ("XG_BCDEFGHJ", False), (ARTICLE, True)])
+def test_report_with_invalid_or_deleted_id_allows_correction(ctx, bot, article_input, deleted):
+    async def scenario():
+        await seed(ctx)
+        if deleted:
+            await ctx.db.mark_deleted(ARTICLE, iso_utc())
+        await report_command(bot.message(text=f"/report {article_input}"), bot, ctx)
+        assert (await ctx.db.get_state(42))["state"] == "report_wait_id"
+        assert "檢舉原因（" not in bot.messages[-1]["text"]
+        if deleted:
+            await cancel_command(bot.message(text="/cancel"), bot, ctx)
+            assert not await ctx.db.get_state(42)
+        else:
+            await private_text(bot.message(text=ARTICLE), bot, ctx)
+            assert (await ctx.db.get_state(42))["state"] == "report_wait_reason"
+        assert not await ctx.db.list_open_reports(10, 0)
+        assert not await ctx.db.get_pending_for_user(42)
+    asyncio.run(scenario())
+
+
 def test_report_prompts_for_id_then_reason_without_creating_submission(ctx, bot):
     async def scenario():
         await seed(ctx)
